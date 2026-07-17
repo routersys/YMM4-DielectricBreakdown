@@ -396,15 +396,11 @@ public sealed class DielectricBreakdownEffectTests
         GC.Collect();
         GC.WaitForPendingFinalizers();
         GC.Collect();
-        var minimum = long.MaxValue;
-        for (var iteration = 0; iteration < 16; iteration++)
-        {
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            pipeline.Process(source, destination, width, height, in parameters);
-            minimum = Math.Min(minimum, GC.GetAllocatedBytesForCurrentThread() - before);
-        }
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        pipeline.Process(source, destination, width, height, in parameters);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        Assert.Equal(0, minimum);
+        Assert.Equal(0, allocated);
     }
 
     [Fact]
@@ -441,6 +437,43 @@ public sealed class DielectricBreakdownEffectTests
 
     [Fact]
     public void SubmittedSharedTexturePipelineDoesNotAllocateManagedMemoryAfterWarmup()
+    {
+        using var pipeline = DielectricBreakdownPipeline.TryCreate();
+        if (pipeline is null)
+        {
+            Assert.Skip("Direct3D 12 is unavailable.");
+            return;
+        }
+
+        var device = GraphicsDevice.GetDefault();
+        if (!device.IsHardwareAccelerated)
+        {
+            Assert.Skip("A hardware GPU is required to keep the submission queue drained.");
+            return;
+        }
+
+        const int width = 64;
+        const int height = 64;
+        using var source = InteropServices.AllocateSharedReadWriteTexture2D<Bgra32, Float4>(device, width, height);
+        using var destination = InteropServices.AllocateSharedReadWriteTexture2D<Bgra32, Float4>(device, width, height);
+        var parameters = CreateParameters();
+        for (var iteration = 0; iteration < 4; iteration++)
+            pipeline.Process(source, destination, width, height, in parameters);
+        pipeline.WaitForCompletion();
+
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        pipeline.Process(source, destination, width, height, in parameters);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        pipeline.WaitForCompletion();
+
+        Assert.Equal(0, allocated);
+    }
+
+    [Fact]
+    public void SubmittedSharedTexturePipelineAllocationsAmortizeToZero()
     {
         using var pipeline = DielectricBreakdownPipeline.TryCreate();
         if (pipeline is null)
