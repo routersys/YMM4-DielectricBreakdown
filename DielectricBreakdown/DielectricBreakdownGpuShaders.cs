@@ -390,88 +390,81 @@ internal readonly partial struct GrowthShader(
             var candidateCount = scratch[5];
             var chargeCount = scratch[0];
             Hlsl.GroupMemoryBarrierWithGroupSync();
+            if (!active)
+                break;
 
-            if (active)
+            for (var i = thread; i < candidateCount; i += threadCount)
             {
-                for (var i = thread; i < candidateCount; i += threadCount)
-                {
-                    var cell = candidates[i];
-                    if (state[cell] != 0)
-                        continue;
-                    var quantized = DielectricBreakdownShaderMath.QuantizedPotential(
-                        potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
-                        chargeCount,
-                        cell % gridWidth,
-                        cell / gridWidth,
-                        fieldBias,
-                        directionX,
-                        directionY,
-                        projectionOffset,
-                        projectionInverseRange);
-                    Hlsl.InterlockedMin(ref reduction[0], quantized);
-                    Hlsl.InterlockedMax(ref reduction[1], quantized);
-                }
+                var cell = candidates[i];
+                if (state[cell] != 0)
+                    continue;
+                var quantized = DielectricBreakdownShaderMath.QuantizedPotential(
+                    potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
+                    chargeCount,
+                    cell % gridWidth,
+                    cell / gridWidth,
+                    fieldBias,
+                    directionX,
+                    directionY,
+                    projectionOffset,
+                    projectionInverseRange);
+                Hlsl.InterlockedMin(ref reduction[0], quantized);
+                Hlsl.InterlockedMax(ref reduction[1], quantized);
             }
             Hlsl.GroupMemoryBarrierWithGroupSync();
 
-            if (active)
+            for (var i = thread; i < candidateCount; i += threadCount)
             {
-                for (var i = thread; i < candidateCount; i += threadCount)
-                {
-                    var cell = candidates[i];
-                    if (state[cell] != 0)
-                        continue;
-                    var quantized = DielectricBreakdownShaderMath.QuantizedScore(
-                        potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
-                        chargeCount,
-                        reduction[0],
-                        reduction[1],
-                        cell % gridWidth,
-                        cell / gridWidth,
-                        cell,
-                        step,
-                        seed,
-                        eta,
-                        fieldBias,
-                        directionX,
-                        directionY,
-                        projectionOffset,
-                        projectionInverseRange);
-                    Hlsl.InterlockedMax(ref reduction[2], quantized);
-                }
+                var cell = candidates[i];
+                if (state[cell] != 0)
+                    continue;
+                var quantized = DielectricBreakdownShaderMath.QuantizedScore(
+                    potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
+                    chargeCount,
+                    reduction[0],
+                    reduction[1],
+                    cell % gridWidth,
+                    cell / gridWidth,
+                    cell,
+                    step,
+                    seed,
+                    eta,
+                    fieldBias,
+                    directionX,
+                    directionY,
+                    projectionOffset,
+                    projectionInverseRange);
+                Hlsl.InterlockedMax(ref reduction[2], quantized);
             }
             Hlsl.GroupMemoryBarrierWithGroupSync();
 
-            if (active)
+            for (var i = thread; i < candidateCount; i += threadCount)
             {
-                for (var i = thread; i < candidateCount; i += threadCount)
-                {
-                    var cell = candidates[i];
-                    if (state[cell] != 0)
-                        continue;
-                    var quantized = DielectricBreakdownShaderMath.QuantizedScore(
-                        potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
-                        chargeCount,
-                        reduction[0],
-                        reduction[1],
-                        cell % gridWidth,
-                        cell / gridWidth,
-                        cell,
-                        step,
-                        seed,
-                        eta,
-                        fieldBias,
-                        directionX,
-                        directionY,
-                        projectionOffset,
-                        projectionInverseRange);
-                    if (quantized == reduction[2])
-                        Hlsl.InterlockedMin(ref reduction[3], cell);
-                }
+                var cell = candidates[i];
+                if (state[cell] != 0)
+                    continue;
+                var quantized = DielectricBreakdownShaderMath.QuantizedScore(
+                    potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
+                    chargeCount,
+                    reduction[0],
+                    reduction[1],
+                    cell % gridWidth,
+                    cell / gridWidth,
+                    cell,
+                    step,
+                    seed,
+                    eta,
+                    fieldBias,
+                    directionX,
+                    directionY,
+                    projectionOffset,
+                    projectionInverseRange);
+                if (quantized == reduction[2])
+                    Hlsl.InterlockedMin(ref reduction[3], cell);
             }
             Hlsl.GroupMemoryBarrierWithGroupSync();
 
-            var chosen = active ? reduction[3] : 2147483647;
+            var chosen = reduction[3];
             var chosenX = chosen % gridWidth;
             var chosenY = chosen / gridWidth;
             if (chosen != 2147483647)
