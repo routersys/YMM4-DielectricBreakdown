@@ -1,0 +1,35 @@
+Key,Parameter,ja-jp,en-us,zh-cn,zh-tw,ko-kr,es-es,ar-sa,id-id
+DielectricBreakdown,,誘電破壊,Dielectric Breakdown,介电击穿,介電擊穿,유전 파괴,Ruptura dieléctrica,الانهيار العازل,Kerusakan Dielektrik
+BasicGroup,,基本,Basic,基本,基本,기본,Básico,أساسي,Dasar
+DischargeGroup,,放電,Discharge,放电,放電,방전,Descarga,التفريغ,Pelepasan
+AppearanceGroup,,描画,Appearance,绘制,繪製,묘화,Apariencia,المظهر,Tampilan
+Amount,,強さ,Amount,强度,強度,강도,Intensidad,الشدة,Intensitas
+AmountDescription,,稲妻の合成量です,Blend amount of the lightning over the source,闪电与源图像的混合量,閃電與源圖像的混合量,번개의 합성량입니다,Cantidad de mezcla del rayo sobre la imagen,مقدار مزج البرق فوق الصورة,Jumlah pencampuran petir di atas citra
+Growth,,成長,Growth,生长,生長,성장,Crecimiento,النمو,Pertumbuhan
+GrowthDescription,,放電経路の伸び具合です。100%で対象へ到達し主放電が光ります,Progress of the discharge path. It reaches the target at 100% and the return stroke flashes,放电路径的延伸程度。100%时到达目标且主放电闪光,放電路徑的延伸程度。100%時到達目標且主放電閃光,방전 경로가 뻗는 정도입니다. 100%에서 대상에 도달하고 주 방전이 빛납니다,Progreso del trayecto de descarga. Alcanza el objetivo al 100% y destella la descarga principal,مدى امتداد مسار التفريغ. يصل إلى الهدف عند 100% ويومض التفريغ الرئيسي,Kemajuan jalur pelepasan. Mencapai target pada 100% dan sambaran balik berkilat
+Quality,,品質,Quality,品质,品質,품질,Calidad,الجودة,Kualitas
+QualityDescription,,成長格子の解像度と成長ステップ数を選びます,Selects the growth grid resolution and step counts,选择生长网格分辨率与步数,選擇生長網格解析度與步數,성장 격자 해상도와 스텝 수를 선택합니다,Selecciona la resolución de la cuadrícula de crecimiento y el número de pasos,يحدد دقة شبكة النمو وعدد الخطوات,Memilih resolusi kisi pertumbuhan dan jumlah langkah
+Angle,,方向,Direction,方向,方向,방향,Dirección,الاتجاه,Arah
+AngleDescription,,稲妻が伸びる方向です。0°で下方向に伸びます,Direction the lightning grows. It grows downward at 0°,闪电延伸的方向。0°时向下延伸,閃電延伸的方向。0°時向下延伸,번개가 뻗는 방향입니다. 0°에서 아래로 뻗습니다,Dirección en la que crece el rayo. Crece hacia abajo a 0°,اتجاه نمو البرق. ينمو لأسفل عند 0°,Arah pertumbuhan petir. Tumbuh ke bawah pada 0°
+Reach,,距離,Reach,距离,距離,거리,Alcance,المدى,Jangkauan
+ReachDescription,,対象までの距離です。素材の長辺に対する割合で指定します,Distance to the target as a ratio of the longer side of the source,到目标的距离。以素材长边的比例指定,到目標的距離。以素材長邊的比例指定,대상까지의 거리입니다. 소재 긴 변에 대한 비율로 지정합니다,Distancia hasta el objetivo como proporción del lado más largo de la fuente,المسافة إلى الهدف كنسبة من الضلع الأطول للمصدر,Jarak ke target sebagai rasio sisi terpanjang sumber
+Branching,,分岐,Branching,分支,分支,분기,Ramificación,التفرع,Percabangan
+BranchingDescription,,枝分かれの密度です。高いほど樹枝状に広がります,Density of branching. Higher values spread into dendritic shapes,分支密度。数值越高越呈树枝状扩散,分支密度。數值越高越呈樹枝狀擴散,가지치기의 밀도입니다. 높을수록 수지상으로 퍼집니다,Densidad de ramificación. Valores altos se extienden en formas dendríticas,كثافة التفرع. القيم الأعلى تنتشر بأشكال شجيرية,Kepadatan percabangan. Nilai tinggi menyebar berbentuk dendritik
+Seed,,シード,Seed,种子,種子,시드,Semilla,البذرة,Seed
+SeedDescription,,放電経路を決める固定値です,A fixed value that determines the discharge path,决定放电路径的固定值,決定放電路徑的固定值,방전 경로를 결정하는 고정값입니다,Valor fijo que determina el trayecto de la descarga,قيمة ثابتة تحدد مسار التفريغ,Nilai tetap yang menentukan jalur pelepasan
+Thickness,,太さ,Thickness,粗细,粗細,두께,Grosor,السماكة,Ketebalan
+ThicknessDescription,,稲妻の芯の太さです,Thickness of the lightning core,闪电核心的粗细,閃電核心的粗細,번개 심의 두께입니다,Grosor del núcleo del rayo,سماكة نواة البرق,Ketebalan inti petir
+Glow,,発光,Glow,发光,發光,발광,Resplandor,التوهج,Pendar
+GlowDescription,,稲妻の周囲に広がる光の強さです,Strength of the glow spreading around the lightning,闪电周围扩散光的强度,閃電周圍擴散光的強度,번개 주위로 퍼지는 빛의 강도입니다,Intensidad del resplandor que se extiende alrededor del rayo,قوة التوهج المنتشر حول البرق,Kekuatan pendar yang menyebar di sekitar petir
+LightningColor,,色,Color,颜色,顏色,색,Color,اللون,Warna
+LightningColorDescription,,稲妻の色です。芯は白く発光します,Color of the lightning. The core glows white,闪电的颜色。核心发白光,閃電的顏色。核心發白光,번개의 색입니다. 심은 하얗게 빛납니다,Color del rayo. El núcleo brilla en blanco,لون البرق. تتوهج النواة باللون الأبيض,Warna petir. Intinya berpendar putih
+QualityBalanced,,標準,Balanced,标准,標準,표준,Estándar,قياسي,Standar
+QualityBalancedDescription,,格子解像度とステップ数を抑えた設定です,Uses reduced grid resolution and step counts,降低网格分辨率与步数的设置,降低網格解析度與步數的設定,격자 해상도와 스텝 수를 줄인 설정입니다,Configuración con resolución de cuadrícula y pasos reducidos,إعداد بدقة شبكة وعدد خطوات مخفضين,Pengaturan dengan resolusi kisi dan langkah yang dikurangi
+QualityHigh,,高品質,High,高品质,高品質,고품질,Alta,عالية,Tinggi
+QualityHighDescription,,品質と処理量の基準設定です,The reference balance of quality and cost,品质与处理量的基准设置,品質與處理量的基準設定,품질과 처리량의 기준 설정입니다,Configuración de referencia entre calidad y coste,الإعداد المرجعي للتوازن بين الجودة والتكلفة,Pengaturan acuan antara kualitas dan beban proses
+QualityUltra,,最高品質,Ultra,最高品质,最高品質,최고 품질,Máxima,قصوى,Ultra
+QualityUltraDescription,,最大の格子解像度とステップ数を使用します,Uses the largest grid resolution and step counts,使用最大的网格分辨率与步数,使用最大的網格解析度與步數,최대 격자 해상도와 스텝 수를 사용합니다,Usa la mayor resolución de cuadrícula y el mayor número de pasos,يستخدم أكبر دقة شبكة وأكبر عدد من الخطوات,Menggunakan resolusi kisi dan jumlah langkah terbesar
+TagLightning,,稲妻,Lightning,闪电,閃電,번개,Rayo,برق,Petir
+TagElectric,,電撃,Electric,电击,電擊,전격,Eléctrico,كهربائي,Listrik
+TagDischarge,,放電,Discharge,放电,放電,방전,Descarga,تفريغ,Pelepasan
+UpdateAvailableMessage,,新しいバージョン {0} が公開されています。,A new version {0} is available.,新版本 {0} 已发布。,新版本 {0} 已發布。,새 버전 {0}이(가) 공개되었습니다.,La nueva versión {0} ya está disponible.,تم إصدار نسخة جديدة {0}.,Versi baru {0} telah dirilis.
