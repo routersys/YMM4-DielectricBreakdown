@@ -15,6 +15,10 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     private ReadWriteBuffer<int>? _candidates;
     private ReadWriteBuffer<int>? _candidateFlags;
     private readonly ReadWriteBuffer<int> _growthLog;
+    private readonly ReadWriteBuffer<int> _parentLog;
+    private readonly ReadBackBuffer<int> _scratchReadBack;
+    private readonly ReadBackBuffer<int> _growthLogReadBack;
+    private readonly ReadBackBuffer<int> _parentLogReadBack;
     private ReadWriteBuffer<int>? _rowCounts;
     private ReadWriteBuffer<int>? _rowOffsets;
     private ReadWriteBuffer<int>? _potential;
@@ -38,6 +42,10 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _device = device;
         _scratch = device.AllocateReadWriteBuffer<int>(DielectricBreakdownSettings.ScratchLength);
         _growthLog = device.AllocateReadWriteBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
+        _parentLog = device.AllocateReadWriteBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
+        _scratchReadBack = device.AllocateReadBackBuffer<int>(DielectricBreakdownSettings.ScratchLength);
+        _growthLogReadBack = device.AllocateReadBackBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
+        _parentLogReadBack = device.AllocateReadBackBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
     }
 
     public static DielectricBreakdownPipeline? TryCreate()
@@ -72,13 +80,14 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     public void Process(ReadOnlySpan<int> source, Span<int> destination, int width, int height, in Parameters parameters)
     {
         var pixelCount = checked(width * height);
-        EnsureResources(width, height, parameters.Quality);
+        EnsureGridFor(width, height, parameters.Quality);
+        EnsureGlow(pixelCount);
         EnsurePackedTextures(width, height);
         var sourceTexture = _packedSource!;
         var outputTexture = _packedOutput!;
         sourceTexture.CopyFrom(MemoryMarshal.Cast<int, Bgra32>(source[..pixelCount]));
         using (ComputeContext context = _device.CreateComputeContext())
-            RecordPipeline(in context, sourceTexture, outputTexture, width, height, in parameters);
+            RecordFullPipeline(in context, sourceTexture, outputTexture, width, height, in parameters);
         outputTexture.CopyTo(MemoryMarshal.Cast<int, Bgra32>(destination[..pixelCount]));
     }
 
@@ -89,9 +98,10 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         int height,
         in Parameters parameters)
     {
-        EnsureResources(width, height, parameters.Quality);
+        EnsureGridFor(width, height, parameters.Quality);
+        EnsureGlow(checked(width * height));
         using ComputeContext context = _device.CreateComputeContext();
-        RecordPipeline(in context, source, destination, width, height, in parameters);
+        RecordFullPipeline(in context, source, destination, width, height, in parameters);
         context.Submit();
     }
 
@@ -102,12 +112,90 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         int height,
         in Parameters parameters)
     {
-        EnsureResources(width, height, parameters.Quality);
+        EnsureGridFor(width, height, parameters.Quality);
+        EnsureGlow(checked(width * height));
         using ComputeContext context = _device.CreateComputeContext();
-        RecordPipeline(in context, source, destination, width, height, in parameters);
+        RecordFullPipeline(in context, source, destination, width, height, in parameters);
     }
 
-    private void RecordPipeline(
+    internal void Simulate(
+        ReadWriteTexture2D<Bgra32, Float4> source,
+        int canvasWidth,
+        int canvasHeight,
+        int sourceOffsetX,
+        int sourceOffsetY,
+        int sourceWidth,
+        int sourceHeight,
+        in Parameters parameters)
+    {
+        EnsureGridFor(canvasWidth, canvasHeight, parameters.Quality);
+        var derived = Derive(canvasWidth, canvasHeight, in parameters);
+        using (ComputeContext context = _device.CreateComputeContext())
+            RecordGrowthStage(in context, source, sourceOffsetX, sourceOffsetY, sourceWidth, sourceHeight, in derived, in parameters);
+        _scratchReadBack.CopyFrom(_scratch);
+        _growthLogReadBack.CopyFrom(_growthLog);
+        _parentLogReadBack.CopyFrom(_parentLog);
+    }
+
+    internal bool TryGetVisibleBounds(int canvasWidth, int canvasHeight, in Parameters parameters, out PixelRect rect)
+    {
+        rect = default;
+        var derived = Derive(canvasWidth, canvasHeight, in parameters);
+        var scratch = _scratchReadBack.Span;
+        var contact = scratch[1];
+        var total = contact != derived.Sentinel ? contact : scratch[4];
+        var visible = parameters.Growth * total;
+        if (total <= 0 || visible <= 0f)
+            return false;
+
+        var growthLog = _growthLogReadBack.Span;
+        var parentLog = _parentLogReadBack.Span;
+        var minX = int.MaxValue;
+        var minY = int.MaxValue;
+        var maxX = int.MinValue;
+        var maxY = int.MinValue;
+        for (var step = 0; step < total && step < visible; step++)
+        {
+            var cell = growthLog[step];
+            if (cell < 0)
+                continue;
+            var parent = parentLog[step];
+            minX = Math.Min(minX, Math.Min(cell % _gridWidth, parent % _gridWidth));
+            maxX = Math.Max(maxX, Math.Max(cell % _gridWidth, parent % _gridWidth));
+            minY = Math.Min(minY, Math.Min(cell / _gridWidth, parent / _gridWidth));
+            maxY = Math.Max(maxY, Math.Max(cell / _gridWidth, parent / _gridWidth));
+        }
+        if (minX == int.MaxValue)
+            return false;
+
+        var padding = (int)MathF.Ceiling(derived.Thickness) + (derived.GlowRadius + 2) * 4;
+        var left = Math.Clamp(((int)(minX * derived.CellSize) - padding) & ~3, 0, canvasWidth);
+        var top = Math.Clamp(((int)(minY * derived.CellSize) - padding) & ~3, 0, canvasHeight);
+        var right = Math.Clamp((int)MathF.Ceiling((maxX + 1) * derived.CellSize) + padding, 0, canvasWidth);
+        var bottom = Math.Clamp((int)MathF.Ceiling((maxY + 1) * derived.CellSize) + padding, 0, canvasHeight);
+        var width = Math.Min((right - left + 3) & ~3, canvasWidth - left);
+        var height = Math.Min((bottom - top + 3) & ~3, canvasHeight - top);
+        if (width <= 0 || height <= 0)
+            return false;
+
+        rect = new PixelRect(left, top, width, height);
+        return true;
+    }
+
+    internal void RenderVisible(
+        ReadWriteTexture2D<Bgra32, Float4> output,
+        int canvasWidth,
+        int canvasHeight,
+        PixelRect rect,
+        in Parameters parameters)
+    {
+        EnsureGlow(checked(rect.Width * rect.Height));
+        var derived = Derive(canvasWidth, canvasHeight, in parameters);
+        using ComputeContext context = _device.CreateComputeContext();
+        RecordRenderStage(in context, output, rect, in derived, in parameters);
+    }
+
+    private void RecordFullPipeline(
         in ComputeContext context,
         ReadWriteTexture2D<Bgra32, Float4> source,
         ReadWriteTexture2D<Bgra32, Float4> output,
@@ -115,55 +203,40 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         int height,
         in Parameters parameters)
     {
-        var settings = DielectricBreakdownSettings.GetQuality(parameters.Quality);
+        var derived = Derive(width, height, in parameters);
+        RecordGrowthStage(in context, source, 0, 0, width, height, in derived, in parameters);
+        RecordRenderStage(in context, output, new PixelRect(0, 0, width, height), in derived, in parameters);
+    }
+
+    private void RecordGrowthStage(
+        in ComputeContext context,
+        ReadWriteTexture2D<Bgra32, Float4> source,
+        int sourceOffsetX,
+        int sourceOffsetY,
+        int sourceWidth,
+        int sourceHeight,
+        in DerivedValues derived,
+        in Parameters parameters)
+    {
         var gridWidth = _gridWidth;
         var gridHeight = _gridHeight;
-        var (_, _, cellSize) = DielectricBreakdownSettings.GetGridSize(width, height, settings.GridResolution);
-        var reachCellCount = Math.Max(parameters.ReachPixels, 1f) / cellSize;
-        var maxSteps = DielectricBreakdownSettings.GetStepCount(reachCellCount, settings.MaxSteps);
-        var sentinel = maxSteps + 1;
-        var maxWalk = maxSteps + 4;
-
-        var radians = parameters.AngleDegrees * (MathF.PI / 180f);
-        var directionX = MathF.Sin(radians);
-        var directionY = MathF.Cos(radians);
-        var projectionMin = MathF.Min(0f, gridWidth * directionX) + MathF.Min(0f, gridHeight * directionY);
-        var projectionMax = MathF.Max(0f, gridWidth * directionX) + MathF.Max(0f, gridHeight * directionY);
-        var projectionInverseRange = 1f / MathF.Max(projectionMax - projectionMin, 1e-4f);
-        var eta = DielectricBreakdownSettings.GetEta(parameters.Branching);
-        var reachQuantized = (int)(reachCellCount * DielectricBreakdownSettings.ProjectionQuantScale);
-        var thickness = Math.Max(parameters.Thickness, 0.05f);
-        var glowWidth = (width + 3) / 4;
-        var glowHeight = (height + 3) / 4;
-        var glowRadius = Math.Clamp((int)((2f + parameters.Glow * 58f) * 0.25f), 1, 16);
-        var glowStrength = parameters.Glow * 0.27f * (glowRadius + 1);
-        var flashTau = MathF.Max(DielectricBreakdownSettings.FlashTauFraction * maxSteps, 1f);
-        var tipTau = MathF.Max(0.03f * maxSteps, 1f);
-
         var mask = _mask!;
         var state = _state!;
         var birth = _birth!;
         var parent = _parent!;
-        var mainFlag = _mainFlag!;
         var charges = _charges!;
         var candidates = _candidates!;
         var candidateFlags = _candidateFlags!;
         var rowCounts = _rowCounts!;
         var rowOffsets = _rowOffsets!;
         var potential = _potential!;
-        var intensity = _intensity!;
-        var jumpFloodA = _jumpFloodA!;
-        var jumpFloodB = _jumpFloodB!;
-        var glowAccum = _glowAccum!;
-        var glowTemp = _glowTemp!;
-        var glowMap = _glowMap!;
 
-        context.For(1, new InitScratchShader(_scratch, sentinel));
-        context.For(gridWidth, gridHeight, new FillIntPlaneShader(mainFlag, gridWidth, gridHeight, 0));
-        context.For(gridWidth, gridHeight, new SilhouetteShader(source, mask, width, height, gridWidth, gridHeight, cellSize, 0.05f));
+        context.For(1, new InitScratchShader(_scratch, derived.Sentinel));
+        context.For(gridWidth, gridHeight, new SilhouetteShader(
+            source, mask, sourceOffsetX, sourceOffsetY, sourceWidth, sourceHeight, gridWidth, gridHeight, derived.CellSize, 0.05f));
         context.Barrier(mask);
         context.Barrier(_scratch);
-        context.For(gridWidth, gridHeight, new ElectrodeInitShader(mask, state, birth, parent, _scratch, gridWidth, gridHeight, directionX, directionY, DielectricBreakdownSettings.ProjectionQuantScale));
+        context.For(gridWidth, gridHeight, new ElectrodeInitShader(mask, state, birth, parent, _scratch, gridWidth, gridHeight, derived.DirectionX, derived.DirectionY, DielectricBreakdownSettings.ProjectionQuantScale));
         context.Barrier(state);
         context.For(gridHeight, new ChargeRowCountShader(state, rowCounts, gridWidth, gridHeight));
         context.Barrier(rowCounts);
@@ -176,20 +249,49 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         context.Barrier(potential);
 
         context.For(DielectricBreakdownSettings.GrowthThreadCount, new GrowthShader(
-            state, birth, parent, potential, _scratch, candidates, candidateFlags, _growthLog,
-            gridWidth, gridHeight, maxSteps, sentinel, parameters.Seed, reachQuantized, eta,
+            state, birth, parent, potential, _scratch, candidates, candidateFlags, _growthLog, _parentLog,
+            gridWidth, gridHeight, derived.MaxSteps, derived.Sentinel, parameters.Seed, derived.ReachQuantized, derived.Eta,
             DielectricBreakdownSettings.ChargeRadius, DielectricBreakdownSettings.FieldBias,
-            directionX, directionY, projectionMin, projectionInverseRange, DielectricBreakdownSettings.ProjectionQuantScale));
+            derived.DirectionX, derived.DirectionY, derived.ProjectionMin, derived.ProjectionInverseRange, DielectricBreakdownSettings.ProjectionQuantScale));
         context.Barrier(state);
         context.Barrier(birth);
         context.Barrier(parent);
         context.Barrier(potential);
         context.Barrier(_scratch);
+        context.Barrier(_growthLog);
+        context.Barrier(_parentLog);
+    }
 
-        context.For(1, new MainChannelShader(parent, birth, mainFlag, _scratch, sentinel, maxWalk));
+    private void RecordRenderStage(
+        in ComputeContext context,
+        ReadWriteTexture2D<Bgra32, Float4> output,
+        PixelRect rect,
+        in DerivedValues derived,
+        in Parameters parameters)
+    {
+        var gridWidth = _gridWidth;
+        var gridHeight = _gridHeight;
+        var state = _state!;
+        var birth = _birth!;
+        var parent = _parent!;
+        var mainFlag = _mainFlag!;
+        var intensity = _intensity!;
+        var jumpFloodA = _jumpFloodA!;
+        var jumpFloodB = _jumpFloodB!;
+        var glowAccum = _glowAccum!;
+        var glowTemp = _glowTemp!;
+        var glowMap = _glowMap!;
+        var glowOffsetX = rect.X / 4;
+        var glowOffsetY = rect.Y / 4;
+        var glowWidth = (rect.Width + 3) / 4;
+        var glowHeight = (rect.Height + 3) / 4;
+
+        context.For(gridWidth, gridHeight, new FillIntPlaneShader(mainFlag, gridWidth, gridHeight, 0));
+        context.Barrier(mainFlag);
+        context.For(1, new MainChannelShader(parent, birth, mainFlag, _scratch, derived.Sentinel, derived.MaxWalk));
         context.Barrier(mainFlag);
         context.For(gridWidth, gridHeight, new IntensityShader(
-            state, birth, parent, mainFlag, intensity, gridWidth, gridHeight, maxWalk,
+            state, birth, parent, mainFlag, intensity, gridWidth, gridHeight, derived.MaxWalk,
             DielectricBreakdownSettings.LeaderIntensity, DielectricBreakdownSettings.SideIntensity, DielectricBreakdownSettings.SideDecayPerHop));
         context.Barrier(intensity);
 
@@ -197,17 +299,17 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         context.Barrier(glowAccum);
         context.For(gridWidth, gridHeight, new GlowDepositShader(
             state, birth, parent, mainFlag, intensity, _scratch, glowAccum,
-            gridWidth, gridHeight, glowWidth, glowHeight, sentinel, cellSize, parameters.Growth,
-            DielectricBreakdownSettings.TipBoost, 1f / tipTau,
-            DielectricBreakdownSettings.FlashAmplitude, 1f / flashTau));
+            gridWidth, gridHeight, glowOffsetX, glowOffsetY, glowWidth, glowHeight, derived.Sentinel, derived.CellSize, parameters.Growth,
+            DielectricBreakdownSettings.TipBoost, derived.InverseTipTau,
+            DielectricBreakdownSettings.FlashAmplitude, derived.InverseFlashTau));
         context.Barrier(glowAccum);
-        context.For(glowWidth, glowHeight, new GlowBlurHorizontalShader(glowAccum, glowTemp, glowWidth, glowHeight, glowRadius));
+        context.For(glowWidth, glowHeight, new GlowBlurHorizontalShader(glowAccum, glowTemp, glowWidth, glowHeight, derived.GlowRadius));
         context.Barrier(glowTemp);
-        context.For(glowWidth, glowHeight, new GlowBlurVerticalShader(glowTemp, glowMap, glowWidth, glowHeight, glowRadius));
+        context.For(glowWidth, glowHeight, new GlowBlurVerticalShader(glowTemp, glowMap, glowWidth, glowHeight, derived.GlowRadius));
         context.Barrier(glowMap);
 
         context.For(gridWidth, gridHeight, new JumpFloodSeedShader(
-            state, birth, _scratch, jumpFloodA, gridWidth, gridHeight, sentinel, parameters.Growth));
+            state, birth, _scratch, jumpFloodA, gridWidth, gridHeight, derived.Sentinel, parameters.Growth));
         context.Barrier(jumpFloodA);
 
         var reading = jumpFloodA;
@@ -225,21 +327,51 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
             stepSize >>= 1;
         }
 
-        context.For(width, height, new RenderShader(
+        context.For(rect.Width, rect.Height, new RenderShader(
             reading, state, birth, parent, mainFlag, intensity, _scratch, glowMap, output,
-            width, height, gridWidth, gridHeight, glowWidth, glowHeight, sentinel, cellSize, parameters.Growth,
-            thickness, glowStrength,
-            DielectricBreakdownSettings.TipBoost, 1f / tipTau,
-            DielectricBreakdownSettings.FlashAmplitude, 1f / flashTau,
+            rect.X, rect.Y, rect.Width, rect.Height, gridWidth, gridHeight,
+            glowOffsetX, glowOffsetY, glowWidth, glowHeight, derived.Sentinel, derived.CellSize, parameters.Growth,
+            derived.Thickness, derived.GlowStrength,
+            DielectricBreakdownSettings.TipBoost, derived.InverseTipTau,
+            DielectricBreakdownSettings.FlashAmplitude, derived.InverseFlashTau,
             parameters.ColorR, parameters.ColorG, parameters.ColorB));
     }
 
-    private void EnsureResources(int width, int height, DielectricBreakdownQuality quality)
+    private static DerivedValues Derive(int width, int height, in Parameters parameters)
+    {
+        var settings = DielectricBreakdownSettings.GetQuality(parameters.Quality);
+        var (gridWidth, gridHeight, cellSize) = DielectricBreakdownSettings.GetGridSize(width, height, settings.GridResolution);
+        var reachCellCount = Math.Max(parameters.ReachPixels, 1f) / cellSize;
+        var maxSteps = DielectricBreakdownSettings.GetStepCount(reachCellCount, settings.MaxSteps);
+        var radians = parameters.AngleDegrees * (MathF.PI / 180f);
+        var directionX = MathF.Sin(radians);
+        var directionY = MathF.Cos(radians);
+        var projectionMin = MathF.Min(0f, gridWidth * directionX) + MathF.Min(0f, gridHeight * directionY);
+        var projectionMax = MathF.Max(0f, gridWidth * directionX) + MathF.Max(0f, gridHeight * directionY);
+        var glowRadius = DielectricBreakdownSettings.GetGlowRadius(parameters.Glow);
+        return new DerivedValues(
+            cellSize,
+            maxSteps,
+            maxSteps + 1,
+            maxSteps + 4,
+            directionX,
+            directionY,
+            projectionMin,
+            1f / MathF.Max(projectionMax - projectionMin, 1e-4f),
+            DielectricBreakdownSettings.GetEta(parameters.Branching),
+            (int)(reachCellCount * DielectricBreakdownSettings.ProjectionQuantScale),
+            Math.Max(parameters.Thickness, 0.05f),
+            glowRadius,
+            parameters.Glow * 0.27f * (glowRadius + 1),
+            1f / MathF.Max(0.03f * maxSteps, 1f),
+            1f / MathF.Max(DielectricBreakdownSettings.FlashTauFraction * maxSteps, 1f));
+    }
+
+    private void EnsureGridFor(int width, int height, DielectricBreakdownQuality quality)
     {
         var settings = DielectricBreakdownSettings.GetQuality(quality);
         var (gridWidth, gridHeight, _) = DielectricBreakdownSettings.GetGridSize(width, height, settings.GridResolution);
         EnsureGrid(gridWidth, gridHeight);
-        EnsureGlow(checked(width * height));
     }
 
     private void EnsureGrid(int gridWidth, int gridHeight)
@@ -345,9 +477,32 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _packedOutput = null;
         _packedWidth = 0;
         _packedHeight = 0;
+        _scratchReadBack.Dispose();
+        _growthLogReadBack.Dispose();
+        _parentLogReadBack.Dispose();
         _growthLog.Dispose();
+        _parentLog.Dispose();
         _scratch.Dispose();
     }
+
+    internal readonly record struct PixelRect(int X, int Y, int Width, int Height);
+
+    private readonly record struct DerivedValues(
+        float CellSize,
+        int MaxSteps,
+        int Sentinel,
+        int MaxWalk,
+        float DirectionX,
+        float DirectionY,
+        float ProjectionMin,
+        float ProjectionInverseRange,
+        float Eta,
+        int ReachQuantized,
+        float Thickness,
+        int GlowRadius,
+        float GlowStrength,
+        float InverseTipTau,
+        float InverseFlashTau);
 
     internal readonly record struct Parameters(
         DielectricBreakdownQuality Quality,

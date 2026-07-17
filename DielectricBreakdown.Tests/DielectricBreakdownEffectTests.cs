@@ -466,6 +466,64 @@ public sealed class DielectricBreakdownEffectTests
         Assert.Equal(0, allocated);
     }
 
+    [Theory]
+    [InlineData(0.3f)]
+    [InlineData(1f)]
+    public void VisibleBoundsCoverAllLitPixelsAndMatchFullRender(float growth)
+    {
+        using var pipeline = DielectricBreakdownPipeline.TryCreate();
+        if (pipeline is null)
+        {
+            Assert.Skip("Direct3D 12 is unavailable.");
+            return;
+        }
+
+        const int width = 192;
+        const int height = 192;
+        var source = CreateSquareSource(width, height, 80, 8, 32, 24);
+        var full = new int[source.Length];
+        var parameters = CreateParameters(growth: growth, reachPixels: 80f, glow: 0.6f, seed: 5);
+        pipeline.Process(source, full, width, height, in parameters);
+
+        var device = GraphicsDevice.GetDefault();
+        using var sourceTexture = device.AllocateReadWriteTexture2D<Bgra32, Float4>(width, height);
+        var sourcePixels = new Bgra32[source.Length];
+        for (var index = 0; index < source.Length; index++)
+            sourcePixels[index].PackedValue = unchecked((uint)source[index]);
+        sourceTexture.CopyFrom(sourcePixels);
+
+        pipeline.Simulate(sourceTexture, width, height, 0, 0, width, height, in parameters);
+        Assert.True(pipeline.TryGetVisibleBounds(width, height, in parameters, out var rect));
+        Assert.True(rect.Width > 0 && rect.Height > 0);
+        Assert.True(rect.X >= 0 && rect.Y >= 0);
+        Assert.True(rect.X + rect.Width <= width && rect.Y + rect.Height <= height);
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                if (full[y * width + x] == 0)
+                    continue;
+                Assert.InRange(x, rect.X, rect.X + rect.Width - 1);
+                Assert.InRange(y, rect.Y, rect.Y + rect.Height - 1);
+            }
+        }
+
+        using var outputTexture = device.AllocateReadWriteTexture2D<Bgra32, Float4>(rect.Width, rect.Height);
+        pipeline.RenderVisible(outputTexture, width, height, rect, in parameters);
+        var result = new Bgra32[rect.Width * rect.Height];
+        outputTexture.CopyTo(result);
+
+        for (var y = 0; y < rect.Height; y++)
+        {
+            for (var x = 0; x < rect.Width; x++)
+            {
+                var expected = unchecked((uint)full[(rect.Y + y) * width + rect.X + x]);
+                Assert.Equal(expected, result[y * rect.Width + x].PackedValue);
+            }
+        }
+    }
+
     [Fact]
     public void Direct2DInteropProducesLightningFromOpaqueCore()
     {

@@ -72,8 +72,10 @@ internal readonly partial struct InitScratchShader(
 internal readonly partial struct SilhouetteShader(
     ReadWriteTexture2D<Bgra32, Float4> source,
     ReadWriteBuffer<int> mask,
-    int width,
-    int height,
+    int sourceOffsetX,
+    int sourceOffsetY,
+    int sourceWidth,
+    int sourceHeight,
     int gridWidth,
     int gridHeight,
     float cellSize,
@@ -81,8 +83,10 @@ internal readonly partial struct SilhouetteShader(
 {
     private readonly ReadWriteTexture2D<Bgra32, Float4> source = source;
     private readonly ReadWriteBuffer<int> mask = mask;
-    private readonly int width = width;
-    private readonly int height = height;
+    private readonly int sourceOffsetX = sourceOffsetX;
+    private readonly int sourceOffsetY = sourceOffsetY;
+    private readonly int sourceWidth = sourceWidth;
+    private readonly int sourceHeight = sourceHeight;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
     private readonly float cellSize = cellSize;
@@ -95,17 +99,17 @@ internal readonly partial struct SilhouetteShader(
         if (gx >= gridWidth || gy >= gridHeight)
             return;
 
-        var x0 = Hlsl.Max((int)(gx * cellSize), 0);
-        var x1 = Hlsl.Min((int)Hlsl.Ceil((gx + 1) * cellSize), width);
-        var y0 = Hlsl.Max((int)(gy * cellSize), 0);
-        var y1 = Hlsl.Min((int)Hlsl.Ceil((gy + 1) * cellSize), height);
+        var x0 = Hlsl.Max((int)(gx * cellSize), sourceOffsetX);
+        var x1 = Hlsl.Min((int)Hlsl.Ceil((gx + 1) * cellSize), sourceOffsetX + sourceWidth);
+        var y0 = Hlsl.Max((int)(gy * cellSize), sourceOffsetY);
+        var y1 = Hlsl.Min((int)Hlsl.Ceil((gy + 1) * cellSize), sourceOffsetY + sourceHeight);
 
         var found = 0;
         for (var y = y0; y < y1 && found == 0; y++)
         {
             for (var x = x0; x < x1; x++)
             {
-                if (source[new Int2(x, y)].W > alphaThreshold)
+                if (source[new Int2(x - sourceOffsetX, y - sourceOffsetY)].W > alphaThreshold)
                 {
                     found = 1;
                     break;
@@ -318,6 +322,7 @@ internal readonly partial struct GrowthShader(
     ReadWriteBuffer<int> candidates,
     ReadWriteBuffer<int> candidateFlags,
     ReadWriteBuffer<int> growthLog,
+    ReadWriteBuffer<int> parentLog,
     int gridWidth,
     int gridHeight,
     int maxSteps,
@@ -344,6 +349,7 @@ internal readonly partial struct GrowthShader(
     private readonly ReadWriteBuffer<int> candidates = candidates;
     private readonly ReadWriteBuffer<int> candidateFlags = candidateFlags;
     private readonly ReadWriteBuffer<int> growthLog = growthLog;
+    private readonly ReadWriteBuffer<int> parentLog = parentLog;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
     private readonly int maxSteps = maxSteps;
@@ -508,8 +514,10 @@ internal readonly partial struct GrowthShader(
                     state[chosen] = 1;
                     birth[chosen] = step + 1;
                     var packed = reduction[4];
-                    parent[chosen] = packed >= 0 ? 65535 - (packed & 131071) : chosen;
+                    var parentCell = packed >= 0 ? 65535 - (packed & 131071) : chosen;
+                    parent[chosen] = parentCell;
                     growthLog[step] = chosen;
+                    parentLog[step] = parentCell;
                     scratch[0] = chargeCount + 1;
                     scratch[4] = step + 1;
                     var projection = (chosenX + 0.5f) * directionX + (chosenY + 0.5f) * directionY;
@@ -539,6 +547,7 @@ internal readonly partial struct GrowthShader(
             else if (thread == 0)
             {
                 growthLog[step] = -1;
+                parentLog[step] = -1;
             }
             Hlsl.DeviceMemoryBarrierWithGroupSync();
         }
@@ -776,6 +785,8 @@ internal readonly partial struct GlowDepositShader(
     ReadWriteBuffer<int> glowAccum,
     int gridWidth,
     int gridHeight,
+    int glowOffsetX,
+    int glowOffsetY,
     int glowWidth,
     int glowHeight,
     int sentinel,
@@ -795,6 +806,8 @@ internal readonly partial struct GlowDepositShader(
     private readonly ReadWriteBuffer<int> glowAccum = glowAccum;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
+    private readonly int glowOffsetX = glowOffsetX;
+    private readonly int glowOffsetY = glowOffsetY;
     private readonly int glowWidth = glowWidth;
     private readonly int glowHeight = glowHeight;
     private readonly int sentinel = sentinel;
@@ -849,8 +862,8 @@ internal readonly partial struct GlowDepositShader(
         for (var i = 0; i < samples; i++)
         {
             var fraction = (i + 0.5f) / samples;
-            var sx = (int)((px + segmentX * fraction) * 0.25f);
-            var sy = (int)((py + segmentY * fraction) * 0.25f);
+            var sx = (int)((px + segmentX * fraction) * 0.25f) - glowOffsetX;
+            var sy = (int)((py + segmentY * fraction) * 0.25f) - glowOffsetY;
             if (sx < 0 || sx >= glowWidth || sy < 0 || sy >= glowHeight)
                 continue;
             Hlsl.InterlockedAdd(ref glowAccum[sy * glowWidth + sx], deposit);
@@ -941,10 +954,14 @@ internal readonly partial struct RenderShader(
     ReadWriteBuffer<int> scratch,
     ReadWriteBuffer<float> glowMap,
     ReadWriteTexture2D<Bgra32, Float4> output,
-    int width,
-    int height,
+    int rectOffsetX,
+    int rectOffsetY,
+    int rectWidth,
+    int rectHeight,
     int gridWidth,
     int gridHeight,
+    int glowOffsetX,
+    int glowOffsetY,
     int glowWidth,
     int glowHeight,
     int sentinel,
@@ -969,10 +986,14 @@ internal readonly partial struct RenderShader(
     private readonly ReadWriteBuffer<int> scratch = scratch;
     private readonly ReadWriteBuffer<float> glowMap = glowMap;
     private readonly ReadWriteTexture2D<Bgra32, Float4> output = output;
-    private readonly int width = width;
-    private readonly int height = height;
+    private readonly int rectOffsetX = rectOffsetX;
+    private readonly int rectOffsetY = rectOffsetY;
+    private readonly int rectWidth = rectWidth;
+    private readonly int rectHeight = rectHeight;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
+    private readonly int glowOffsetX = glowOffsetX;
+    private readonly int glowOffsetY = glowOffsetY;
     private readonly int glowWidth = glowWidth;
     private readonly int glowHeight = glowHeight;
     private readonly int sentinel = sentinel;
@@ -990,10 +1011,10 @@ internal readonly partial struct RenderShader(
 
     public void Execute()
     {
-        var x = ThreadIds.X;
-        var y = ThreadIds.Y;
-        if (x >= width || y >= height)
+        if (ThreadIds.X >= rectWidth || ThreadIds.Y >= rectHeight)
             return;
+        var x = ThreadIds.X + rectOffsetX;
+        var y = ThreadIds.Y + rectOffsetY;
 
         var cell = FindNearestSite(x, y);
         var bestEnergy = 0f;
@@ -1115,8 +1136,8 @@ internal readonly partial struct RenderShader(
 
     private float SampleGlow(int x, int y)
     {
-        var fx = Hlsl.Clamp(x * 0.25f - 0.5f, 0f, glowWidth - 1f);
-        var fy = Hlsl.Clamp(y * 0.25f - 0.5f, 0f, glowHeight - 1f);
+        var fx = Hlsl.Clamp(x * 0.25f - 0.5f - glowOffsetX, 0f, glowWidth - 1f);
+        var fy = Hlsl.Clamp(y * 0.25f - 0.5f - glowOffsetY, 0f, glowHeight - 1f);
         var ix0 = (int)fx;
         var iy0 = (int)fy;
         var wx = fx - ix0;

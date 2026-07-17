@@ -14,12 +14,16 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
     private DielectricBreakdownGpuInterop? _interop;
     private DielectricBreakdownPipeline? _pipeline;
     private DielectricBreakdownCustomEffect? _effect;
+    private Crop? _outputCrop;
+    private ID2D1Image? _outputCropOutput;
     private AffineTransform2D? _outputTransform;
     private ID2D1Image? _outputTransformOutput;
     private bool _isFirst = true;
     private bool _hasOutput;
     private bool _hasOutputOffset;
+    private bool _hasCropRect;
     private Vector2 _outputOffset;
+    private Vector4 _cropRect;
     private Parameters _parameters;
 
     public DielectricBreakdownEffectProcessor(IGraphicsDevicesAndContext devices, DielectricBreakdownEffect item)
@@ -31,7 +35,7 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
 
     public override DrawDescription Update(EffectDescription effectDescription)
     {
-        if (IsPassThroughEffect || _effect is null || _outputTransform is null || _outputTransformOutput is null || _interop is null || _pipeline is null || input is null)
+        if (IsPassThroughEffect || _effect is null || _outputCrop is null || _outputTransform is null || _outputTransformOutput is null || _interop is null || _pipeline is null || input is null)
             return effectDescription.DrawDescription;
 
         var frame = effectDescription.ItemPosition.Frame;
@@ -96,18 +100,11 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
         }
         var canvasWidth = (int)canvasWidthValue;
         var canvasHeight = (int)canvasHeightValue;
+        var itemWidth = (int)widthValue;
+        var itemHeight = (int)heightValue;
 
-        if (!_interop.MatchesSize(canvasWidth, canvasHeight))
-            _outputTransform.SetInput(0, null, true);
-        var resourcesChanged = _interop.EnsureResources(canvasWidth, canvasHeight);
-        var outputOffset = new Vector2(bounds.Left - margin, bounds.Top - margin);
-        if (!_hasOutputOffset || _outputOffset != outputOffset)
-        {
-            _outputTransform.TransformMatrix = Matrix3x2.CreateTranslation(outputOffset);
-            _outputOffset = outputOffset;
-            _hasOutputOffset = true;
-        }
-        _interop.RenderInput(input, new Vortice.RawRectF(bounds.Left - margin, bounds.Top - margin, bounds.Right + margin, bounds.Bottom + margin));
+        _interop.EnsureSource(itemWidth, itemHeight);
+        _interop.RenderInput(input, new Vortice.RawRectF(bounds.Left, bounds.Top, bounds.Left + itemWidth, bounds.Top + itemHeight));
 
         var pipelineParameters = new DielectricBreakdownPipeline.Parameters(
             parameters.Quality,
@@ -125,11 +122,14 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
         _interop.BeginCompute();
         try
         {
-            _pipeline.Process(
+            _pipeline.Simulate(
                 _interop.SourceTexture,
-                _interop.OutputTexture,
                 canvasWidth,
                 canvasHeight,
+                margin,
+                margin,
+                itemWidth,
+                itemHeight,
                 in pipelineParameters);
         }
         finally
@@ -137,10 +137,50 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
             _interop.EndCompute();
         }
 
-        if (resourcesChanged || !_hasOutput)
+        if (!_pipeline.TryGetVisibleBounds(canvasWidth, canvasHeight, in pipelineParameters, out var rect))
         {
-            _outputTransform.SetInput(0, _interop.OutputBitmap, true);
+            _effect.Amount = 0f;
+            _parameters = parameters;
+            _isFirst = true;
+            return effectDescription.DrawDescription;
+        }
+
+        if (!_interop.OutputCovers(rect.Width, rect.Height))
+            _outputCrop.SetInput(0, null, true);
+        var outputChanged = _interop.EnsureOutput(rect.Width, rect.Height);
+        _interop.BeginCompute();
+        try
+        {
+            _pipeline.RenderVisible(
+                _interop.OutputTexture,
+                canvasWidth,
+                canvasHeight,
+                rect,
+                in pipelineParameters);
+        }
+        finally
+        {
+            _interop.EndCompute();
+        }
+
+        if (outputChanged || !_hasOutput)
+        {
+            _outputCrop.SetInput(0, _interop.OutputBitmap, true);
             _effect.SetInput(1, _outputTransformOutput, true);
+        }
+        var cropRect = new Vector4(0f, 0f, rect.Width, rect.Height);
+        if (!_hasCropRect || _cropRect != cropRect)
+        {
+            _outputCrop.Rectangle = cropRect;
+            _cropRect = cropRect;
+            _hasCropRect = true;
+        }
+        var outputOffset = new Vector2(bounds.Left - margin + rect.X, bounds.Top - margin + rect.Y);
+        if (!_hasOutputOffset || _outputOffset != outputOffset)
+        {
+            _outputTransform.TransformMatrix = Matrix3x2.CreateTranslation(outputOffset);
+            _outputOffset = outputOffset;
+            _hasOutputOffset = true;
         }
         _hasOutput = true;
         _parameters = parameters;
@@ -161,6 +201,8 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
         }
 
         DielectricBreakdownCustomEffect? effect = null;
+        Crop? outputCrop = null;
+        ID2D1Image? outputCropOutput = null;
         AffineTransform2D? outputTransform = null;
         ID2D1Image? outputTransformOutput = null;
         ID2D1Image? output = null;
@@ -174,18 +216,25 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
                 interop.Dispose();
                 return null;
             }
+            outputCrop = new Crop(devices.DeviceContext);
+            outputCropOutput = outputCrop.Output;
             outputTransform = new AffineTransform2D(devices.DeviceContext)
             {
                 BorderMode = BorderMode.Hard,
             };
+            outputTransform.SetInput(0, outputCropOutput, true);
             outputTransformOutput = outputTransform.Output;
             output = effect.Output;
             _interop = interop;
             _pipeline = pipeline;
             _effect = effect;
+            _outputCrop = outputCrop;
+            _outputCropOutput = outputCropOutput;
             _outputTransform = outputTransform;
             _outputTransformOutput = outputTransformOutput;
             disposer.Collect(effect);
+            disposer.Collect(outputCrop);
+            disposer.Collect(outputCropOutput);
             disposer.Collect(outputTransform);
             disposer.Collect(outputTransformOutput);
             disposer.Collect(output);
@@ -196,6 +245,8 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
             output?.Dispose();
             outputTransformOutput?.Dispose();
             outputTransform?.Dispose();
+            outputCropOutput?.Dispose();
+            outputCrop?.Dispose();
             effect?.Dispose();
             pipeline.Dispose();
             interop.Dispose();
@@ -214,10 +265,11 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
     {
         _effect?.SetInput(0, null, true);
         _effect?.SetInput(1, null, true);
-        _outputTransform?.SetInput(0, null, true);
+        _outputCrop?.SetInput(0, null, true);
         _isFirst = true;
         _hasOutput = false;
         _hasOutputOffset = false;
+        _hasCropRect = false;
     }
 
     protected override void Dispose(bool disposing)

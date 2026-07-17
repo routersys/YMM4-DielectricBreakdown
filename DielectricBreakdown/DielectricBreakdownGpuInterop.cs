@@ -26,8 +26,10 @@ internal sealed class DielectricBreakdownGpuInterop : IDisposable
     private ID3D11Texture2D? _outputD3D11Texture;
     private ID2D1Bitmap1? _sourceBitmap;
     private ID2D1Bitmap1? _outputBitmap;
-    private int _width;
-    private int _height;
+    private int _sourceWidth;
+    private int _sourceHeight;
+    private int _outputWidth;
+    private int _outputHeight;
     private ulong _fenceValue;
     private bool _computeActive;
     private bool _disposed;
@@ -56,8 +58,11 @@ internal sealed class DielectricBreakdownGpuInterop : IDisposable
 
     public ID2D1Bitmap1 OutputBitmap => _outputBitmap!;
 
-    public bool MatchesSize(int width, int height)
-        => _sourceTexture is not null && _width == width && _height == height;
+    public bool SourceMatches(int width, int height)
+        => _sourceTexture is not null && _sourceWidth == width && _sourceHeight == height;
+
+    public bool OutputCovers(int width, int height)
+        => _outputTexture is not null && _outputWidth >= width && _outputHeight >= height;
 
     public static unsafe DielectricBreakdownGpuInterop? TryCreate(IGraphicsDevicesAndContext devices)
     {
@@ -98,13 +103,34 @@ internal sealed class DielectricBreakdownGpuInterop : IDisposable
 
     public bool EnsureResources(int width, int height)
     {
-        if (MatchesSize(width, height))
+        var sourceChanged = EnsureSource(width, height);
+        var outputChanged = EnsureOutput(width, height);
+        return sourceChanged || outputChanged;
+    }
+
+    public bool EnsureSource(int width, int height)
+    {
+        if (SourceMatches(width, height))
             return false;
 
         if (_sourceTexture is not null)
             WaitForIdle();
-        ReleaseResources();
-        CreateResources(width, height);
+        ReleaseSourceResources();
+        CreateSourceResources(width, height);
+        return true;
+    }
+
+    public bool EnsureOutput(int width, int height)
+    {
+        if (OutputCovers(width, height))
+            return false;
+
+        var capacityWidth = Math.Max(width, _outputWidth);
+        var capacityHeight = Math.Max(height, _outputHeight);
+        if (_outputTexture is not null)
+            WaitForIdle();
+        ReleaseOutputResources();
+        CreateOutputResources(capacityWidth, capacityHeight);
         return true;
     }
 
@@ -168,82 +194,102 @@ internal sealed class DielectricBreakdownGpuInterop : IDisposable
         return enumerator.Current;
     }
 
-    private void CreateResources(int width, int height)
+    private void CreateSourceResources(int width, int height)
     {
         ReadWriteTexture2D<Bgra32, Float4>? sourceTexture = null;
-        ReadWriteTexture2D<Bgra32, Float4>? outputTexture = null;
         ID3D11Texture2D? sourceD3D11Texture = null;
-        ID3D11Texture2D? outputD3D11Texture = null;
         ID2D1Bitmap1? sourceBitmap = null;
-        ID2D1Bitmap1? outputBitmap = null;
         nint sourceHandle = 0;
-        nint outputHandle = 0;
         try
         {
             sourceTexture = InteropServices.AllocateSharedReadWriteTexture2D<Bgra32, Float4>(_device, width, height);
-            outputTexture = InteropServices.AllocateSharedReadWriteTexture2D<Bgra32, Float4>(_device, width, height);
             sourceHandle = InteropServices.CreateSharedHandle(sourceTexture);
-            outputHandle = InteropServices.CreateSharedHandle(outputTexture);
             sourceD3D11Texture = _d3dDevice.OpenSharedResource1<ID3D11Texture2D>(sourceHandle);
-            outputD3D11Texture = _d3dDevice.OpenSharedResource1<ID3D11Texture2D>(outputHandle);
             using var sourceSurface = sourceD3D11Texture.QueryInterface<IDXGISurface>();
-            using var outputSurface = outputD3D11Texture.QueryInterface<IDXGISurface>();
             var pixelFormat = new PixelFormat(Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied);
             sourceBitmap = _renderContext.CreateBitmapFromDxgiSurface(
                 sourceSurface,
                 new BitmapProperties1(pixelFormat, 96f, 96f, BitmapOptions.Target));
-            outputBitmap = _renderContext.CreateBitmapFromDxgiSurface(
-                outputSurface,
-                new BitmapProperties1(pixelFormat, 96f, 96f, BitmapOptions.None));
             _renderContext.Target = sourceBitmap;
 
             _sourceTexture = sourceTexture;
-            _outputTexture = outputTexture;
             _sourceD3D11Texture = sourceD3D11Texture;
-            _outputD3D11Texture = outputD3D11Texture;
             _sourceBitmap = sourceBitmap;
-            _outputBitmap = outputBitmap;
-            _width = width;
-            _height = height;
+            _sourceWidth = width;
+            _sourceHeight = height;
             sourceTexture = null;
-            outputTexture = null;
             sourceD3D11Texture = null;
-            outputD3D11Texture = null;
             sourceBitmap = null;
-            outputBitmap = null;
         }
         finally
         {
             if (sourceHandle != 0)
                 CloseHandle(sourceHandle);
-            if (outputHandle != 0)
-                CloseHandle(outputHandle);
-            outputBitmap?.Dispose();
             sourceBitmap?.Dispose();
-            outputD3D11Texture?.Dispose();
             sourceD3D11Texture?.Dispose();
-            outputTexture?.Dispose();
             sourceTexture?.Dispose();
         }
     }
 
-    private void ReleaseResources()
+    private void CreateOutputResources(int width, int height)
+    {
+        ReadWriteTexture2D<Bgra32, Float4>? outputTexture = null;
+        ID3D11Texture2D? outputD3D11Texture = null;
+        ID2D1Bitmap1? outputBitmap = null;
+        nint outputHandle = 0;
+        try
+        {
+            outputTexture = InteropServices.AllocateSharedReadWriteTexture2D<Bgra32, Float4>(_device, width, height);
+            outputHandle = InteropServices.CreateSharedHandle(outputTexture);
+            outputD3D11Texture = _d3dDevice.OpenSharedResource1<ID3D11Texture2D>(outputHandle);
+            using var outputSurface = outputD3D11Texture.QueryInterface<IDXGISurface>();
+            var pixelFormat = new PixelFormat(Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied);
+            outputBitmap = _renderContext.CreateBitmapFromDxgiSurface(
+                outputSurface,
+                new BitmapProperties1(pixelFormat, 96f, 96f, BitmapOptions.None));
+
+            _outputTexture = outputTexture;
+            _outputD3D11Texture = outputD3D11Texture;
+            _outputBitmap = outputBitmap;
+            _outputWidth = width;
+            _outputHeight = height;
+            outputTexture = null;
+            outputD3D11Texture = null;
+            outputBitmap = null;
+        }
+        finally
+        {
+            if (outputHandle != 0)
+                CloseHandle(outputHandle);
+            outputBitmap?.Dispose();
+            outputD3D11Texture?.Dispose();
+            outputTexture?.Dispose();
+        }
+    }
+
+    private void ReleaseSourceResources()
     {
         _renderContext.Target = null;
-        _outputBitmap?.Dispose();
         _sourceBitmap?.Dispose();
-        _outputD3D11Texture?.Dispose();
         _sourceD3D11Texture?.Dispose();
-        _outputTexture?.Dispose();
         _sourceTexture?.Dispose();
-        _outputBitmap = null;
         _sourceBitmap = null;
-        _outputD3D11Texture = null;
         _sourceD3D11Texture = null;
-        _outputTexture = null;
         _sourceTexture = null;
-        _width = 0;
-        _height = 0;
+        _sourceWidth = 0;
+        _sourceHeight = 0;
+    }
+
+    private void ReleaseOutputResources()
+    {
+        _outputBitmap?.Dispose();
+        _outputD3D11Texture?.Dispose();
+        _outputTexture?.Dispose();
+        _outputBitmap = null;
+        _outputD3D11Texture = null;
+        _outputTexture = null;
+        _outputWidth = 0;
+        _outputHeight = 0;
     }
 
     public void Dispose()
@@ -257,7 +303,8 @@ internal sealed class DielectricBreakdownGpuInterop : IDisposable
         finally
         {
             _disposed = true;
-            ReleaseResources();
+            ReleaseOutputResources();
+            ReleaseSourceResources();
             _renderContext.Dispose();
             _fence.Dispose();
             _d3dContext.Dispose();

@@ -46,6 +46,9 @@ internal static class DielectricBreakdownSettings
     public static int GetStepCount(float reachCells, int maxSteps)
         => Math.Clamp((int)(reachCells * 10f) + 96, 128, maxSteps);
 
+    public static int GetGlowRadius(float glow)
+        => Math.Clamp((int)((2f + glow * 58f) * 0.25f), 1, 16);
+
     public static float GetEta(float branching)
         => MaximumEta - Math.Clamp(branching, 0f, 1f) * (MaximumEta - MinimumEta);
 

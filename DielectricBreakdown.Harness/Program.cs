@@ -54,6 +54,51 @@ foreach (var quality in new[] { DielectricBreakdownQuality.Balanced, DielectricB
     }
 }
 
+{
+    var device = ComputeSharp.GraphicsDevice.GetDefault();
+    const int canvas = 4096;
+    const int item = 400;
+    var margin = (canvas - item) / 2;
+    var bigPixels = new ComputeSharp.Bgra32[item * item];
+    for (var y = 0; y < 120; y++)
+        for (var x = 0; x < item; x++)
+            bigPixels[y * item + x].PackedValue = 0xFFB0B0B8u;
+    using var bigSource = device.AllocateReadWriteTexture2D<ComputeSharp.Bgra32, ComputeSharp.Float4>(item, item);
+    bigSource.CopyFrom(bigPixels);
+    using var fullSource = device.AllocateReadWriteTexture2D<ComputeSharp.Bgra32, ComputeSharp.Float4>(canvas, canvas);
+    using var fullOutput = device.AllocateReadWriteTexture2D<ComputeSharp.Bgra32, ComputeSharp.Float4>(canvas, canvas);
+    var parameters = new DielectricBreakdownPipeline.Parameters(DielectricBreakdownQuality.High, 1f, 0.5f, 0f, 1600f, 2.5f, 0.5f, 0.7f, 0.8f, 1f, 7);
+
+    pipeline.Process(fullSource, fullOutput, canvas, canvas, in parameters);
+    pipeline.WaitForCompletion();
+    var stopwatch = Stopwatch.StartNew();
+    const int fullFrames = 5;
+    for (var frame = 0; frame < fullFrames; frame++)
+        pipeline.Process(fullSource, fullOutput, canvas, canvas, in parameters);
+    pipeline.WaitForCompletion();
+    stopwatch.Stop();
+    Console.WriteLine($"full canvas {canvas}x{canvas}: {stopwatch.Elapsed.TotalMilliseconds / fullFrames:F2} ms/frame");
+
+    pipeline.Simulate(bigSource, canvas, canvas, margin, margin, item, item, in parameters);
+    if (pipeline.TryGetVisibleBounds(canvas, canvas, in parameters, out var rect))
+    {
+        using var rectOutput = device.AllocateReadWriteTexture2D<ComputeSharp.Bgra32, ComputeSharp.Float4>(rect.Width, rect.Height);
+        pipeline.RenderVisible(rectOutput, canvas, canvas, rect, in parameters);
+        pipeline.WaitForCompletion();
+        stopwatch.Restart();
+        const int rectFrames = 10;
+        for (var frame = 0; frame < rectFrames; frame++)
+        {
+            pipeline.Simulate(bigSource, canvas, canvas, margin, margin, item, item, in parameters);
+            pipeline.TryGetVisibleBounds(canvas, canvas, in parameters, out rect);
+            pipeline.RenderVisible(rectOutput, canvas, canvas, rect, in parameters);
+        }
+        pipeline.WaitForCompletion();
+        stopwatch.Stop();
+        Console.WriteLine($"visible rect {rect.Width}x{rect.Height} at ({rect.X},{rect.Y}): {stopwatch.Elapsed.TotalMilliseconds / rectFrames:F2} ms/frame");
+    }
+}
+
 foreach (var growth in new[] { 0.25f, 0.5f, 0.75f, 0.95f, 1f })
 {
     var parameters = new DielectricBreakdownPipeline.Parameters(DielectricBreakdownQuality.High, growth, 0.5f, 0f, 200f, 2.5f, 0.5f, 0.7f, 0.8f, 1f, 7);
