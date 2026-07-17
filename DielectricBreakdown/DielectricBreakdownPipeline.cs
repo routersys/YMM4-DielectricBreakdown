@@ -12,9 +12,12 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     private ReadWriteBuffer<int>? _parent;
     private ReadWriteBuffer<int>? _mainFlag;
     private ReadWriteBuffer<int>? _charges;
+    private ReadWriteBuffer<int>? _candidates;
+    private ReadWriteBuffer<int>? _candidateFlags;
+    private readonly ReadWriteBuffer<int> _growthLog;
     private ReadWriteBuffer<int>? _rowCounts;
     private ReadWriteBuffer<int>? _rowOffsets;
-    private ReadWriteBuffer<float>? _potential;
+    private ReadWriteBuffer<int>? _potential;
     private ReadWriteBuffer<float>? _intensity;
     private readonly ReadWriteBuffer<int> _scratch;
     private int _gridWidth;
@@ -35,6 +38,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     {
         _device = device;
         _scratch = device.AllocateReadWriteBuffer<int>(DielectricBreakdownSettings.ScratchLength);
+        _growthLog = device.AllocateReadWriteBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
     }
 
     public static DielectricBreakdownPipeline? TryCreate()
@@ -143,6 +147,8 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         var parent = _parent!;
         var mainFlag = _mainFlag!;
         var charges = _charges!;
+        var candidates = _candidates!;
+        var candidateFlags = _candidateFlags!;
         var rowCounts = _rowCounts!;
         var rowOffsets = _rowOffsets!;
         var potential = _potential!;
@@ -170,27 +176,16 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         context.For(gridWidth, gridHeight, new InitialPotentialShader(charges, _scratch, potential, gridWidth, gridHeight, DielectricBreakdownSettings.ChargeRadius));
         context.Barrier(potential);
 
-        for (var step = 0; step < maxSteps; step++)
-        {
-            context.For(gridWidth, gridHeight, new PotentialRangeShader(
-                state, potential, _scratch, gridWidth, gridHeight, step, sentinel,
-                DielectricBreakdownSettings.FieldBias, directionX, directionY, projectionMin, projectionInverseRange));
-            context.Barrier(_scratch);
-            context.For(gridWidth, gridHeight, new ScoreShader(
-                state, potential, _scratch, gridWidth, gridHeight, step, sentinel, parameters.Seed, eta,
-                DielectricBreakdownSettings.FieldBias, directionX, directionY, projectionMin, projectionInverseRange));
-            context.Barrier(_scratch);
-            context.For(gridWidth, gridHeight, new ResolveShader(
-                state, potential, _scratch, gridWidth, gridHeight, step, sentinel, parameters.Seed, eta,
-                DielectricBreakdownSettings.FieldBias, directionX, directionY, projectionMin, projectionInverseRange));
-            context.Barrier(_scratch);
-            context.For(gridWidth, gridHeight, new CommitShader(
-                state, birth, parent, potential, _scratch, gridWidth, gridHeight, step, sentinel, reachQuantized,
-                DielectricBreakdownSettings.ChargeRadius, directionX, directionY, DielectricBreakdownSettings.ProjectionQuantScale));
-            context.Barrier(state);
-            context.Barrier(potential);
-            context.Barrier(_scratch);
-        }
+        context.For(DielectricBreakdownSettings.GrowthThreadCount, new GrowthShader(
+            state, birth, parent, potential, _scratch, candidates, candidateFlags, _growthLog,
+            gridWidth, gridHeight, maxSteps, sentinel, parameters.Seed, reachQuantized, eta,
+            DielectricBreakdownSettings.ChargeRadius, DielectricBreakdownSettings.FieldBias,
+            directionX, directionY, projectionMin, projectionInverseRange, DielectricBreakdownSettings.ProjectionQuantScale));
+        context.Barrier(state);
+        context.Barrier(birth);
+        context.Barrier(parent);
+        context.Barrier(potential);
+        context.Barrier(_scratch);
 
         context.For(1, new MainChannelShader(parent, birth, mainFlag, _scratch, sentinel, maxWalk));
         context.Barrier(mainFlag);
@@ -263,9 +258,11 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _parent = _device.AllocateReadWriteBuffer<int>(gridLength);
         _mainFlag = _device.AllocateReadWriteBuffer<int>(gridLength);
         _charges = _device.AllocateReadWriteBuffer<int>(gridLength);
+        _candidates = _device.AllocateReadWriteBuffer<int>(gridLength);
+        _candidateFlags = _device.AllocateReadWriteBuffer<int>(gridLength);
         _rowCounts = _device.AllocateReadWriteBuffer<int>(gridHeight);
         _rowOffsets = _device.AllocateReadWriteBuffer<int>(gridHeight);
-        _potential = _device.AllocateReadWriteBuffer<float>(gridLength);
+        _potential = _device.AllocateReadWriteBuffer<int>(gridLength);
         _intensity = _device.AllocateReadWriteBuffer<float>(gridLength);
         _gridWidth = gridWidth;
         _gridHeight = gridHeight;
@@ -316,6 +313,8 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _parent?.Dispose();
         _mainFlag?.Dispose();
         _charges?.Dispose();
+        _candidates?.Dispose();
+        _candidateFlags?.Dispose();
         _rowCounts?.Dispose();
         _rowOffsets?.Dispose();
         _potential?.Dispose();
@@ -326,6 +325,8 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _parent = null;
         _mainFlag = null;
         _charges = null;
+        _candidates = null;
+        _candidateFlags = null;
         _rowCounts = null;
         _rowOffsets = null;
         _potential = null;
@@ -355,6 +356,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _packedOutput = null;
         _packedWidth = 0;
         _packedHeight = 0;
+        _growthLog.Dispose();
         _scratch.Dispose();
     }
 

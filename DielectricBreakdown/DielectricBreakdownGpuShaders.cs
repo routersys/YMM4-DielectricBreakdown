@@ -59,97 +59,11 @@ internal readonly partial struct InitScratchShader(
         if (ThreadIds.X != 0)
             return;
         scratch[0] = 0;
-        scratch[1] = 0;
-        scratch[2] = sentinel;
-        scratch[3] = -1;
-        scratch[4] = -1;
-        scratch[5] = -1;
-        scratch[6] = 2147483647;
-        scratch[7] = 2147483647;
-        scratch[8] = -1073741824;
-        scratch[9] = 0;
-        scratch[10] = 2147483647;
-        scratch[11] = 2147483647;
-        scratch[12] = -1;
-        scratch[13] = -1;
-    }
-}
-
-[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
-[GeneratedComputeShaderDescriptor]
-internal readonly partial struct PotentialRangeShader(
-    ReadWriteBuffer<int> state,
-    ReadWriteBuffer<float> potential,
-    ReadWriteBuffer<int> scratch,
-    int gridWidth,
-    int gridHeight,
-    int step,
-    int sentinel,
-    float fieldBias,
-    float directionX,
-    float directionY,
-    float projectionOffset,
-    float projectionInverseRange) : IComputeShader
-{
-    private readonly ReadWriteBuffer<int> state = state;
-    private readonly ReadWriteBuffer<float> potential = potential;
-    private readonly ReadWriteBuffer<int> scratch = scratch;
-    private readonly int gridWidth = gridWidth;
-    private readonly int gridHeight = gridHeight;
-    private readonly int step = step;
-    private readonly int sentinel = sentinel;
-    private readonly float fieldBias = fieldBias;
-    private readonly float directionX = directionX;
-    private readonly float directionY = directionY;
-    private readonly float projectionOffset = projectionOffset;
-    private readonly float projectionInverseRange = projectionInverseRange;
-
-    public void Execute()
-    {
-        var gx = ThreadIds.X;
-        var gy = ThreadIds.Y;
-        if (gx >= gridWidth || gy >= gridHeight)
-            return;
-        if (scratch[2] != sentinel)
-            return;
-
-        var index = gy * gridWidth + gx;
-        if (state[index] != 0)
-            return;
-        if (!HasStructureNeighbor(gx, gy))
-            return;
-
-        var quantized = DielectricBreakdownShaderMath.QuantizedPotential(
-            potential[index],
-            scratch[1],
-            gx,
-            gy,
-            fieldBias,
-            directionX,
-            directionY,
-            projectionOffset,
-            projectionInverseRange);
-        Hlsl.InterlockedMin(ref scratch[10 + (step & 1)], quantized);
-        Hlsl.InterlockedMax(ref scratch[12 + (step & 1)], quantized);
-    }
-
-    private bool HasStructureNeighbor(int gx, int gy)
-    {
-        for (var dy = -1; dy <= 1; dy++)
-        {
-            for (var dx = -1; dx <= 1; dx++)
-            {
-                if (dx == 0 && dy == 0)
-                    continue;
-                var nx = gx + dx;
-                var ny = gy + dy;
-                if (nx < 0 || nx >= gridWidth || ny < 0 || ny >= gridHeight)
-                    continue;
-                if (state[ny * gridWidth + nx] == 1)
-                    return true;
-            }
-        }
-        return false;
+        scratch[1] = sentinel;
+        scratch[2] = -1;
+        scratch[3] = -1073741824;
+        scratch[4] = 0;
+        scratch[5] = 0;
     }
 }
 
@@ -259,7 +173,7 @@ internal readonly partial struct ElectrodeInitShader(
         birth[index] = 0;
         parent[index] = index;
         var projection = (gx + 0.5f) * directionX + (gy + 0.5f) * directionY;
-        Hlsl.InterlockedMax(ref scratch[8], (int)(projection * projectionQuantScale));
+        Hlsl.InterlockedMax(ref scratch[3], (int)(projection * projectionQuantScale));
     }
 }
 
@@ -318,7 +232,6 @@ internal readonly partial struct ChargeRowOffsetShader(
             total += rowCounts[row];
         }
         scratch[0] = total;
-        scratch[1] = total;
     }
 }
 
@@ -361,14 +274,14 @@ internal readonly partial struct ChargeFillShader(
 internal readonly partial struct InitialPotentialShader(
     ReadWriteBuffer<int> charges,
     ReadWriteBuffer<int> scratch,
-    ReadWriteBuffer<float> potential,
+    ReadWriteBuffer<int> potential,
     int gridWidth,
     int gridHeight,
     float chargeRadius) : IComputeShader
 {
     private readonly ReadWriteBuffer<int> charges = charges;
     private readonly ReadWriteBuffer<int> scratch = scratch;
-    private readonly ReadWriteBuffer<float> potential = potential;
+    private readonly ReadWriteBuffer<int> potential = potential;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
     private readonly float chargeRadius = chargeRadius;
@@ -380,276 +293,274 @@ internal readonly partial struct InitialPotentialShader(
         if (gx >= gridWidth || gy >= gridHeight)
             return;
 
-        var count = scratch[1];
-        var sum = 0f;
+        var count = scratch[0];
+        var sum = 0;
         for (var j = 0; j < count; j++)
         {
             var charge = charges[j];
             var dx = gx - charge % gridWidth;
             var dy = gy - charge / gridWidth;
             var distance = Hlsl.Sqrt((float)(dx * dx + dy * dy));
-            sum += 1f - chargeRadius / Hlsl.Max(distance, chargeRadius);
+            sum += (int)((1f - chargeRadius / Hlsl.Max(distance, chargeRadius)) * DielectricBreakdownSettings.PotentialQuantScale);
         }
         potential[gy * gridWidth + gx] = sum;
     }
 }
 
-[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[ThreadGroupSize(DielectricBreakdownSettings.GrowthThreadCount, 1, 1)]
 [GeneratedComputeShaderDescriptor]
-internal readonly partial struct ScoreShader(
-    ReadWriteBuffer<int> state,
-    ReadWriteBuffer<float> potential,
-    ReadWriteBuffer<int> scratch,
-    int gridWidth,
-    int gridHeight,
-    int step,
-    int sentinel,
-    int seed,
-    float eta,
-    float fieldBias,
-    float directionX,
-    float directionY,
-    float projectionOffset,
-    float projectionInverseRange) : IComputeShader
-{
-    private readonly ReadWriteBuffer<int> state = state;
-    private readonly ReadWriteBuffer<float> potential = potential;
-    private readonly ReadWriteBuffer<int> scratch = scratch;
-    private readonly int gridWidth = gridWidth;
-    private readonly int gridHeight = gridHeight;
-    private readonly int step = step;
-    private readonly int sentinel = sentinel;
-    private readonly int seed = seed;
-    private readonly float eta = eta;
-    private readonly float fieldBias = fieldBias;
-    private readonly float directionX = directionX;
-    private readonly float directionY = directionY;
-    private readonly float projectionOffset = projectionOffset;
-    private readonly float projectionInverseRange = projectionInverseRange;
-
-    public void Execute()
-    {
-        var gx = ThreadIds.X;
-        var gy = ThreadIds.Y;
-        if (gx >= gridWidth || gy >= gridHeight)
-            return;
-        if (scratch[2] != sentinel)
-            return;
-
-        var index = gy * gridWidth + gx;
-        if (state[index] != 0)
-            return;
-        if (!HasStructureNeighbor(gx, gy))
-            return;
-
-        var quantized = DielectricBreakdownShaderMath.QuantizedScore(
-            potential[index],
-            scratch[1],
-            scratch[10 + (step & 1)],
-            scratch[12 + (step & 1)],
-            gx,
-            gy,
-            index,
-            step,
-            seed,
-            eta,
-            fieldBias,
-            directionX,
-            directionY,
-            projectionOffset,
-            projectionInverseRange);
-        Hlsl.InterlockedMax(ref scratch[4 + (step & 1)], quantized);
-    }
-
-    private bool HasStructureNeighbor(int gx, int gy)
-    {
-        for (var dy = -1; dy <= 1; dy++)
-        {
-            for (var dx = -1; dx <= 1; dx++)
-            {
-                if (dx == 0 && dy == 0)
-                    continue;
-                var nx = gx + dx;
-                var ny = gy + dy;
-                if (nx < 0 || nx >= gridWidth || ny < 0 || ny >= gridHeight)
-                    continue;
-                if (state[ny * gridWidth + nx] == 1)
-                    return true;
-            }
-        }
-        return false;
-    }
-}
-
-[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
-[GeneratedComputeShaderDescriptor]
-internal readonly partial struct ResolveShader(
-    ReadWriteBuffer<int> state,
-    ReadWriteBuffer<float> potential,
-    ReadWriteBuffer<int> scratch,
-    int gridWidth,
-    int gridHeight,
-    int step,
-    int sentinel,
-    int seed,
-    float eta,
-    float fieldBias,
-    float directionX,
-    float directionY,
-    float projectionOffset,
-    float projectionInverseRange) : IComputeShader
-{
-    private readonly ReadWriteBuffer<int> state = state;
-    private readonly ReadWriteBuffer<float> potential = potential;
-    private readonly ReadWriteBuffer<int> scratch = scratch;
-    private readonly int gridWidth = gridWidth;
-    private readonly int gridHeight = gridHeight;
-    private readonly int step = step;
-    private readonly int sentinel = sentinel;
-    private readonly int seed = seed;
-    private readonly float eta = eta;
-    private readonly float fieldBias = fieldBias;
-    private readonly float directionX = directionX;
-    private readonly float directionY = directionY;
-    private readonly float projectionOffset = projectionOffset;
-    private readonly float projectionInverseRange = projectionInverseRange;
-
-    public void Execute()
-    {
-        var gx = ThreadIds.X;
-        var gy = ThreadIds.Y;
-        if (gx >= gridWidth || gy >= gridHeight)
-            return;
-        if (scratch[2] != sentinel)
-            return;
-
-        var index = gy * gridWidth + gx;
-        if (state[index] != 0)
-            return;
-        if (!HasStructureNeighbor(gx, gy))
-            return;
-
-        var quantized = DielectricBreakdownShaderMath.QuantizedScore(
-            potential[index],
-            scratch[1],
-            scratch[10 + (step & 1)],
-            scratch[12 + (step & 1)],
-            gx,
-            gy,
-            index,
-            step,
-            seed,
-            eta,
-            fieldBias,
-            directionX,
-            directionY,
-            projectionOffset,
-            projectionInverseRange);
-        if (quantized == scratch[4 + (step & 1)])
-            Hlsl.InterlockedMin(ref scratch[6 + (step & 1)], index);
-    }
-
-    private bool HasStructureNeighbor(int gx, int gy)
-    {
-        for (var dy = -1; dy <= 1; dy++)
-        {
-            for (var dx = -1; dx <= 1; dx++)
-            {
-                if (dx == 0 && dy == 0)
-                    continue;
-                var nx = gx + dx;
-                var ny = gy + dy;
-                if (nx < 0 || nx >= gridWidth || ny < 0 || ny >= gridHeight)
-                    continue;
-                if (state[ny * gridWidth + nx] == 1)
-                    return true;
-            }
-        }
-        return false;
-    }
-}
-
-[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
-[GeneratedComputeShaderDescriptor]
-internal readonly partial struct CommitShader(
+internal readonly partial struct GrowthShader(
     ReadWriteBuffer<int> state,
     ReadWriteBuffer<int> birth,
     ReadWriteBuffer<int> parent,
-    ReadWriteBuffer<float> potential,
+    ReadWriteBuffer<int> potential,
     ReadWriteBuffer<int> scratch,
+    ReadWriteBuffer<int> candidates,
+    ReadWriteBuffer<int> candidateFlags,
+    ReadWriteBuffer<int> growthLog,
     int gridWidth,
     int gridHeight,
-    int step,
+    int maxSteps,
     int sentinel,
+    int seed,
     int reachQuantized,
+    float eta,
     float chargeRadius,
+    float fieldBias,
     float directionX,
     float directionY,
+    float projectionOffset,
+    float projectionInverseRange,
     float projectionQuantScale) : IComputeShader
 {
+    [GroupShared(16)]
+    private static readonly int[] reduction = null!;
+
     private readonly ReadWriteBuffer<int> state = state;
     private readonly ReadWriteBuffer<int> birth = birth;
     private readonly ReadWriteBuffer<int> parent = parent;
-    private readonly ReadWriteBuffer<float> potential = potential;
+    private readonly ReadWriteBuffer<int> potential = potential;
     private readonly ReadWriteBuffer<int> scratch = scratch;
+    private readonly ReadWriteBuffer<int> candidates = candidates;
+    private readonly ReadWriteBuffer<int> candidateFlags = candidateFlags;
+    private readonly ReadWriteBuffer<int> growthLog = growthLog;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
-    private readonly int step = step;
+    private readonly int maxSteps = maxSteps;
     private readonly int sentinel = sentinel;
+    private readonly int seed = seed;
     private readonly int reachQuantized = reachQuantized;
+    private readonly float eta = eta;
     private readonly float chargeRadius = chargeRadius;
+    private readonly float fieldBias = fieldBias;
     private readonly float directionX = directionX;
     private readonly float directionY = directionY;
+    private readonly float projectionOffset = projectionOffset;
+    private readonly float projectionInverseRange = projectionInverseRange;
     private readonly float projectionQuantScale = projectionQuantScale;
 
     public void Execute()
     {
-        var gx = ThreadIds.X;
-        var gy = ThreadIds.Y;
-        if (gx >= gridWidth || gy >= gridHeight)
-            return;
+        var thread = ThreadIds.X;
+        var threadCount = DielectricBreakdownSettings.GrowthThreadCount;
+        var gridLength = gridWidth * gridHeight;
 
-        var index = gy * gridWidth + gx;
-        var nextParity = (step + 1) & 1;
-        if (index == 0)
+        for (var i = thread; i < gridLength; i += threadCount)
+            candidateFlags[i] = 0;
+        Hlsl.DeviceMemoryBarrierWithGroupSync();
+
+        for (var i = thread; i < gridLength; i += threadCount)
         {
-            scratch[4 + nextParity] = -1;
-            scratch[6 + nextParity] = 2147483647;
-            scratch[10 + nextParity] = 2147483647;
-            scratch[12 + nextParity] = -1;
+            if (state[i] != 0)
+                continue;
+            if (!HasStructureNeighbor(i % gridWidth, i / gridWidth))
+                continue;
+            var slot = 0;
+            Hlsl.InterlockedAdd(ref scratch[5], 1, out slot);
+            candidates[slot] = i;
+            candidateFlags[i] = 1;
         }
+        Hlsl.DeviceMemoryBarrierWithGroupSync();
 
-        var chosen = scratch[6 + (step & 1)];
-        if (chosen == 2147483647)
-            return;
-
-        var chosenX = chosen % gridWidth;
-        var chosenY = chosen / gridWidth;
-        var dx = gx - chosenX;
-        var dy = gy - chosenY;
-        var distance = Hlsl.Sqrt((float)(dx * dx + dy * dy));
-        potential[index] += 1f - chargeRadius / Hlsl.Max(distance, chargeRadius);
-
-        if (index != chosen)
-            return;
-
-        state[index] = 1;
-        birth[index] = step + 1;
-        parent[index] = SelectParent(gx, gy);
-        scratch[1] = scratch[1] + 1;
-        scratch[9] = step + 1;
-        var projection = (gx + 0.5f) * directionX + (gy + 0.5f) * directionY;
-        if ((int)(projection * projectionQuantScale) >= scratch[8] + reachQuantized && scratch[2] == sentinel)
+        for (var step = 0; step < maxSteps; step++)
         {
-            scratch[2] = step + 1;
-            scratch[3] = index;
+            if (thread < 16)
+                reduction[thread] = thread == 0 || thread == 3 ? 2147483647 : -1;
+            var active = scratch[1] == sentinel;
+            var candidateCount = scratch[5];
+            var chargeCount = scratch[0];
+            Hlsl.GroupMemoryBarrierWithGroupSync();
+
+            if (active)
+            {
+                for (var i = thread; i < candidateCount; i += threadCount)
+                {
+                    var cell = candidates[i];
+                    if (state[cell] != 0)
+                        continue;
+                    var quantized = DielectricBreakdownShaderMath.QuantizedPotential(
+                        potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
+                        chargeCount,
+                        cell % gridWidth,
+                        cell / gridWidth,
+                        fieldBias,
+                        directionX,
+                        directionY,
+                        projectionOffset,
+                        projectionInverseRange);
+                    Hlsl.InterlockedMin(ref reduction[0], quantized);
+                    Hlsl.InterlockedMax(ref reduction[1], quantized);
+                }
+            }
+            Hlsl.GroupMemoryBarrierWithGroupSync();
+
+            if (active)
+            {
+                for (var i = thread; i < candidateCount; i += threadCount)
+                {
+                    var cell = candidates[i];
+                    if (state[cell] != 0)
+                        continue;
+                    var quantized = DielectricBreakdownShaderMath.QuantizedScore(
+                        potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
+                        chargeCount,
+                        reduction[0],
+                        reduction[1],
+                        cell % gridWidth,
+                        cell / gridWidth,
+                        cell,
+                        step,
+                        seed,
+                        eta,
+                        fieldBias,
+                        directionX,
+                        directionY,
+                        projectionOffset,
+                        projectionInverseRange);
+                    Hlsl.InterlockedMax(ref reduction[2], quantized);
+                }
+            }
+            Hlsl.GroupMemoryBarrierWithGroupSync();
+
+            if (active)
+            {
+                for (var i = thread; i < candidateCount; i += threadCount)
+                {
+                    var cell = candidates[i];
+                    if (state[cell] != 0)
+                        continue;
+                    var quantized = DielectricBreakdownShaderMath.QuantizedScore(
+                        potential[cell] / DielectricBreakdownSettings.PotentialQuantScale,
+                        chargeCount,
+                        reduction[0],
+                        reduction[1],
+                        cell % gridWidth,
+                        cell / gridWidth,
+                        cell,
+                        step,
+                        seed,
+                        eta,
+                        fieldBias,
+                        directionX,
+                        directionY,
+                        projectionOffset,
+                        projectionInverseRange);
+                    if (quantized == reduction[2])
+                        Hlsl.InterlockedMin(ref reduction[3], cell);
+                }
+            }
+            Hlsl.GroupMemoryBarrierWithGroupSync();
+
+            var chosen = active ? reduction[3] : 2147483647;
+            var chosenX = chosen % gridWidth;
+            var chosenY = chosen / gridWidth;
+            if (chosen != 2147483647)
+            {
+                if (thread < 8)
+                {
+                    var offset = thread < 4 ? thread : thread + 1;
+                    var nx = chosenX + offset % 3 - 1;
+                    var ny = chosenY + offset / 3 - 1;
+                    if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight)
+                    {
+                        var neighbor = ny * gridWidth + nx;
+                        var neighborState = state[neighbor];
+                        if (neighborState == 1)
+                        {
+                            Hlsl.InterlockedMax(ref reduction[4], (birth[neighbor] << 17) | (65535 - neighbor));
+                        }
+                        else if (neighborState == 0 && candidateFlags[neighbor] == 0)
+                        {
+                            candidateFlags[neighbor] = 1;
+                            var slot = 0;
+                            Hlsl.InterlockedAdd(ref scratch[5], 1, out slot);
+                            candidates[slot] = neighbor;
+                            reduction[5 + thread] = neighbor;
+                        }
+                    }
+                }
+
+                for (var i = thread; i < candidateCount; i += threadCount)
+                {
+                    var cell = candidates[i];
+                    potential[cell] += Contribution(cell % gridWidth, cell / gridWidth, chosenX, chosenY);
+                }
+            }
+            Hlsl.GroupMemoryBarrierWithGroupSync();
+
+            if (chosen != 2147483647)
+            {
+                if (thread == 0)
+                {
+                    state[chosen] = 1;
+                    birth[chosen] = step + 1;
+                    var packed = reduction[4];
+                    parent[chosen] = packed >= 0 ? 65535 - (packed & 131071) : chosen;
+                    growthLog[step] = chosen;
+                    scratch[0] = chargeCount + 1;
+                    scratch[4] = step + 1;
+                    var projection = (chosenX + 0.5f) * directionX + (chosenY + 0.5f) * directionY;
+                    if ((int)(projection * projectionQuantScale) >= scratch[3] + reachQuantized)
+                    {
+                        scratch[1] = step + 1;
+                        scratch[2] = chosen;
+                    }
+                }
+
+                var appended = reduction[5 + (thread & 7)];
+                if (appended >= 0)
+                {
+                    var appendedX = appended % gridWidth;
+                    var appendedY = appended / gridWidth;
+                    var sum = thread < 8 ? Contribution(appendedX, appendedY, chosenX, chosenY) : 0;
+                    for (var s = thread >> 3; s < step; s += threadCount >> 3)
+                    {
+                        var site = growthLog[s];
+                        if (site >= 0)
+                            sum += Contribution(appendedX, appendedY, site % gridWidth, site / gridWidth);
+                    }
+                    if (sum != 0)
+                        Hlsl.InterlockedAdd(ref potential[appended], sum);
+                }
+            }
+            else if (thread == 0)
+            {
+                growthLog[step] = -1;
+            }
+            Hlsl.DeviceMemoryBarrierWithGroupSync();
         }
     }
 
-    private int SelectParent(int gx, int gy)
+    private int Contribution(int cellX, int cellY, int siteX, int siteY)
     {
-        var bestIndex = gy * gridWidth + gx;
-        var bestBirth = -1;
+        var dx = cellX - siteX;
+        var dy = cellY - siteY;
+        var distance = Hlsl.Sqrt((float)(dx * dx + dy * dy));
+        return (int)((1f - chargeRadius / Hlsl.Max(distance, chargeRadius)) * DielectricBreakdownSettings.PotentialQuantScale);
+    }
+
+    private bool HasStructureNeighbor(int gx, int gy)
+    {
         for (var dy = -1; dy <= 1; dy++)
         {
             for (var dx = -1; dx <= 1; dx++)
@@ -660,18 +571,11 @@ internal readonly partial struct CommitShader(
                 var ny = gy + dy;
                 if (nx < 0 || nx >= gridWidth || ny < 0 || ny >= gridHeight)
                     continue;
-                var neighbor = ny * gridWidth + nx;
-                if (state[neighbor] != 1)
-                    continue;
-                var neighborBirth = birth[neighbor];
-                if (neighborBirth > bestBirth || (neighborBirth == bestBirth && neighbor < bestIndex))
-                {
-                    bestBirth = neighborBirth;
-                    bestIndex = neighbor;
-                }
+                if (state[ny * gridWidth + nx] == 1)
+                    return true;
             }
         }
-        return bestIndex;
+        return false;
     }
 }
 
@@ -696,10 +600,10 @@ internal readonly partial struct MainChannelShader(
     {
         if (ThreadIds.X != 0)
             return;
-        if (scratch[2] == sentinel)
+        if (scratch[1] == sentinel)
             return;
 
-        var cell = scratch[3];
+        var cell = scratch[2];
         for (var i = 0; i < maxWalk; i++)
         {
             if (cell < 0)
@@ -819,8 +723,8 @@ internal readonly partial struct JumpFloodSeedShader(
         if (state[index] != 1 || birth[index] < 1)
             return;
 
-        var contact = scratch[2];
-        var total = contact != sentinel ? contact : scratch[9];
+        var contact = scratch[1];
+        var total = contact != sentinel ? contact : scratch[4];
         var visible = growth * total;
         if (birth[index] - 1 >= visible)
             return;
@@ -943,8 +847,8 @@ internal readonly partial struct GlowDepositShader(
         if (cellBirth < 1)
             return;
 
-        var contact = scratch[2];
-        var total = contact != sentinel ? contact : scratch[9];
+        var contact = scratch[1];
+        var total = contact != sentinel ? contact : scratch[4];
         var visible = growth * total;
         if (cellBirth - 1 >= visible)
             return;
@@ -1124,8 +1028,8 @@ internal readonly partial struct RenderShader(
         var bestCore = 0f;
         if (cell >= 0)
         {
-            var contact = scratch[2];
-            var total = contact != sentinel ? contact : scratch[9];
+            var contact = scratch[1];
+            var total = contact != sentinel ? contact : scratch[4];
             var visible = growth * total;
             var position = new Float2(x + 0.5f, y + 0.5f);
 
