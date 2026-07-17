@@ -22,9 +22,11 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
     private bool _hasOutput;
     private bool _hasOutputOffset;
     private bool _hasCropRect;
+    private bool _hasRenderState;
     private Vector2 _outputOffset;
     private Vector4 _cropRect;
     private Parameters _parameters;
+    private RenderState _renderState;
 
     public DielectricBreakdownEffectProcessor(IGraphicsDevicesAndContext devices, DielectricBreakdownEffect item)
         : base(devices)
@@ -119,10 +121,11 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
             parameters.Color.B / 255f,
             Math.Max(parameters.Seed, 0));
 
+        bool structureChanged;
         _interop.BeginCompute();
         try
         {
-            _pipeline.Simulate(
+            structureChanged = _pipeline.Simulate(
                 _interop.SourceTexture,
                 canvasWidth,
                 canvasHeight,
@@ -142,25 +145,39 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
             _effect.Amount = 0f;
             _parameters = parameters;
             _isFirst = true;
+            _hasRenderState = false;
             return effectDescription.DrawDescription;
         }
 
         if (!_interop.OutputCovers(rect.Width, rect.Height))
             _outputCrop.SetInput(0, null, true);
         var outputChanged = _interop.EnsureOutput(rect.Width, rect.Height);
-        _interop.BeginCompute();
-        try
+        var renderState = new RenderState(
+            pipelineParameters.Growth,
+            pipelineParameters.Thickness,
+            pipelineParameters.Glow,
+            pipelineParameters.ColorR,
+            pipelineParameters.ColorG,
+            pipelineParameters.ColorB,
+            rect);
+        if (structureChanged || outputChanged || !_hasOutput || !_hasRenderState || _renderState != renderState)
         {
-            _pipeline.RenderVisible(
-                _interop.OutputTexture,
-                canvasWidth,
-                canvasHeight,
-                rect,
-                in pipelineParameters);
-        }
-        finally
-        {
-            _interop.EndCompute();
+            _interop.BeginCompute();
+            try
+            {
+                _pipeline.RenderVisible(
+                    _interop.OutputTexture,
+                    canvasWidth,
+                    canvasHeight,
+                    rect,
+                    in pipelineParameters);
+            }
+            finally
+            {
+                _interop.EndCompute();
+            }
+            _renderState = renderState;
+            _hasRenderState = true;
         }
 
         if (outputChanged || !_hasOutput)
@@ -270,6 +287,7 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
         _hasOutput = false;
         _hasOutputOffset = false;
         _hasCropRect = false;
+        _hasRenderState = false;
     }
 
     protected override void Dispose(bool disposing)
@@ -291,6 +309,15 @@ internal sealed class DielectricBreakdownEffectProcessor : VideoEffectProcessorB
             base.Dispose(disposing);
         }
     }
+
+    private readonly record struct RenderState(
+        float Growth,
+        float Thickness,
+        float Glow,
+        float ColorR,
+        float ColorG,
+        float ColorB,
+        DielectricBreakdownPipeline.PixelRect Rect);
 
     private readonly record struct Parameters(
         float Amount,

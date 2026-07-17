@@ -18,13 +18,15 @@ internal static class DielectricBreakdownSettings
     public const int GrowthThreadCount = 1024;
     public const int MaximumStepCount = 1536;
     public const float PotentialQuantScale = 16384f;
-    public const int ScratchLength = 6;
+    public const int ScratchLength = 8;
     public const int ScratchChargeCount = 0;
     public const int ScratchContactStep = 1;
     public const int ScratchContactCell = 2;
     public const int ScratchSilhouetteMaxProjection = 3;
     public const int ScratchGrownSteps = 4;
     public const int ScratchCandidateCount = 5;
+    public const int ScratchMaskHashSum = 6;
+    public const int ScratchMaskHashMix = 7;
 
     public static QualitySettings GetQuality(DielectricBreakdownQuality quality)
         => quality switch

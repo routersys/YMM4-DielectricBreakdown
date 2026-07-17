@@ -19,6 +19,10 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     private readonly ReadBackBuffer<int> _scratchReadBack;
     private readonly ReadBackBuffer<int> _growthLogReadBack;
     private readonly ReadBackBuffer<int> _parentLogReadBack;
+    private readonly int[] _cachedGrowthLog;
+    private readonly int[] _cachedParentLog;
+    private int _cachedTotal;
+    private StructureKey? _structureKey;
     private ReadWriteBuffer<int>? _rowCounts;
     private ReadWriteBuffer<int>? _rowOffsets;
     private ReadWriteBuffer<int>? _potential;
@@ -46,6 +50,8 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _scratchReadBack = device.AllocateReadBackBuffer<int>(DielectricBreakdownSettings.ScratchLength);
         _growthLogReadBack = device.AllocateReadBackBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
         _parentLogReadBack = device.AllocateReadBackBuffer<int>(DielectricBreakdownSettings.MaximumStepCount);
+        _cachedGrowthLog = new int[DielectricBreakdownSettings.MaximumStepCount];
+        _cachedParentLog = new int[DielectricBreakdownSettings.MaximumStepCount];
     }
 
     public static DielectricBreakdownPipeline? TryCreate()
@@ -118,7 +124,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         RecordFullPipeline(in context, source, destination, width, height, in parameters);
     }
 
-    internal void Simulate(
+    internal bool Simulate(
         ReadWriteTexture2D<Bgra32, Float4> source,
         int canvasWidth,
         int canvasHeight,
@@ -131,25 +137,53 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         EnsureGridFor(canvasWidth, canvasHeight, parameters.Quality);
         var derived = Derive(canvasWidth, canvasHeight, in parameters);
         using (ComputeContext context = _device.CreateComputeContext())
-            RecordGrowthStage(in context, source, sourceOffsetX, sourceOffsetY, sourceWidth, sourceHeight, in derived, in parameters);
+        {
+            RecordSilhouetteStage(in context, source, sourceOffsetX, sourceOffsetY, sourceWidth, sourceHeight, in derived);
+            RecordMaskHashStage(in context);
+        }
+        _scratchReadBack.CopyFrom(_scratch);
+        var hashed = _scratchReadBack.Span;
+        var key = new StructureKey(
+            hashed[6],
+            hashed[7],
+            canvasWidth,
+            canvasHeight,
+            parameters.Quality,
+            parameters.Seed,
+            parameters.AngleDegrees,
+            parameters.ReachPixels,
+            parameters.Branching);
+        if (_structureKey == key)
+            return false;
+
+        using (ComputeContext context = _device.CreateComputeContext())
+            RecordGrowthStage(in context, in derived, in parameters);
         _scratchReadBack.CopyFrom(_scratch);
         _growthLogReadBack.CopyFrom(_growthLog);
         _parentLogReadBack.CopyFrom(_parentLog);
+        var scratch = _scratchReadBack.Span;
+        var contact = scratch[1];
+        _cachedTotal = contact != derived.Sentinel ? contact : scratch[4];
+        if (_cachedTotal > 0)
+        {
+            _growthLogReadBack.Span[.._cachedTotal].CopyTo(_cachedGrowthLog);
+            _parentLogReadBack.Span[.._cachedTotal].CopyTo(_cachedParentLog);
+        }
+        _structureKey = key;
+        return true;
     }
 
     internal bool TryGetVisibleBounds(int canvasWidth, int canvasHeight, in Parameters parameters, out PixelRect rect)
     {
         rect = default;
         var derived = Derive(canvasWidth, canvasHeight, in parameters);
-        var scratch = _scratchReadBack.Span;
-        var contact = scratch[1];
-        var total = contact != derived.Sentinel ? contact : scratch[4];
+        var total = _cachedTotal;
         var visible = parameters.Growth * total;
         if (total <= 0 || visible <= 0f)
             return false;
 
-        var growthLog = _growthLogReadBack.Span;
-        var parentLog = _parentLogReadBack.Span;
+        var growthLog = _cachedGrowthLog;
+        var parentLog = _cachedParentLog;
         var minX = int.MaxValue;
         var minY = int.MaxValue;
         var maxX = int.MinValue;
@@ -203,18 +237,37 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         int height,
         in Parameters parameters)
     {
+        _structureKey = null;
         var derived = Derive(width, height, in parameters);
-        RecordGrowthStage(in context, source, 0, 0, width, height, in derived, in parameters);
+        RecordSilhouetteStage(in context, source, 0, 0, width, height, in derived);
+        RecordGrowthStage(in context, in derived, in parameters);
         RecordRenderStage(in context, output, new PixelRect(0, 0, width, height), in derived, in parameters);
     }
 
-    private void RecordGrowthStage(
+    private void RecordSilhouetteStage(
         in ComputeContext context,
         ReadWriteTexture2D<Bgra32, Float4> source,
         int sourceOffsetX,
         int sourceOffsetY,
         int sourceWidth,
         int sourceHeight,
+        in DerivedValues derived)
+    {
+        context.For(_gridWidth, _gridHeight, new SilhouetteShader(
+            source, _mask!, sourceOffsetX, sourceOffsetY, sourceWidth, sourceHeight, _gridWidth, _gridHeight, derived.CellSize, 0.05f));
+        context.Barrier(_mask!);
+    }
+
+    private void RecordMaskHashStage(in ComputeContext context)
+    {
+        context.For(1, new MaskHashResetShader(_scratch));
+        context.Barrier(_scratch);
+        context.For(_gridWidth, _gridHeight, new MaskHashShader(_mask!, _scratch, _gridWidth, _gridHeight));
+        context.Barrier(_scratch);
+    }
+
+    private void RecordGrowthStage(
+        in ComputeContext context,
         in DerivedValues derived,
         in Parameters parameters)
     {
@@ -232,9 +285,6 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         var potential = _potential!;
 
         context.For(1, new InitScratchShader(_scratch, derived.Sentinel));
-        context.For(gridWidth, gridHeight, new SilhouetteShader(
-            source, mask, sourceOffsetX, sourceOffsetY, sourceWidth, sourceHeight, gridWidth, gridHeight, derived.CellSize, 0.05f));
-        context.Barrier(mask);
         context.Barrier(_scratch);
         context.For(gridWidth, gridHeight, new ElectrodeInitShader(mask, state, birth, parent, _scratch, gridWidth, gridHeight, derived.DirectionX, derived.DirectionY, DielectricBreakdownSettings.ProjectionQuantScale));
         context.Barrier(state);
@@ -486,6 +536,17 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     }
 
     internal readonly record struct PixelRect(int X, int Y, int Width, int Height);
+
+    private readonly record struct StructureKey(
+        int MaskHashSum,
+        int MaskHashMix,
+        int CanvasWidth,
+        int CanvasHeight,
+        DielectricBreakdownQuality Quality,
+        int Seed,
+        float AngleDegrees,
+        float ReachPixels,
+        float Branching);
 
     private readonly record struct DerivedValues(
         float CellSize,

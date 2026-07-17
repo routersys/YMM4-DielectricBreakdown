@@ -120,6 +120,55 @@ internal readonly partial struct SilhouetteShader(
     }
 }
 
+[ThreadGroupSize(DefaultThreadGroupSizes.X)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct MaskHashResetShader(
+    ReadWriteBuffer<int> scratch) : IComputeShader
+{
+    private readonly ReadWriteBuffer<int> scratch = scratch;
+
+    public void Execute()
+    {
+        if (ThreadIds.X != 0)
+            return;
+        scratch[6] = 0;
+        scratch[7] = 0;
+    }
+}
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct MaskHashShader(
+    ReadWriteBuffer<int> mask,
+    ReadWriteBuffer<int> scratch,
+    int gridWidth,
+    int gridHeight) : IComputeShader
+{
+    private readonly ReadWriteBuffer<int> mask = mask;
+    private readonly ReadWriteBuffer<int> scratch = scratch;
+    private readonly int gridWidth = gridWidth;
+    private readonly int gridHeight = gridHeight;
+
+    public void Execute()
+    {
+        var gx = ThreadIds.X;
+        var gy = ThreadIds.Y;
+        if (gx >= gridWidth || gy >= gridHeight)
+            return;
+
+        var index = gy * gridWidth + gx;
+        if (mask[index] != 1)
+            return;
+
+        var mixed = (uint)index * 0x9E3779B9u;
+        mixed ^= mixed >> 16;
+        mixed *= 0x85EBCA6Bu;
+        mixed ^= mixed >> 13;
+        Hlsl.InterlockedAdd(ref scratch[6], (int)mixed);
+        Hlsl.InterlockedXor(ref scratch[7], (int)(mixed * 0xC2B2AE35u));
+    }
+}
+
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct ElectrodeInitShader(

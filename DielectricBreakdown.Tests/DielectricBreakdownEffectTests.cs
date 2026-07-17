@@ -525,6 +525,43 @@ public sealed class DielectricBreakdownEffectTests
     }
 
     [Fact]
+    public void SimulateCachesStructureUntilInputsChange()
+    {
+        using var pipeline = DielectricBreakdownPipeline.TryCreate();
+        if (pipeline is null)
+        {
+            Assert.Skip("Direct3D 12 is unavailable.");
+            return;
+        }
+
+        const int width = 128;
+        const int height = 128;
+        var source = CreateSquareSource(width, height, 48, 16, 32, 32);
+        var device = GraphicsDevice.GetDefault();
+        using var sourceTexture = device.AllocateReadWriteTexture2D<Bgra32, Float4>(width, height);
+        var sourcePixels = new Bgra32[source.Length];
+        for (var index = 0; index < source.Length; index++)
+            sourcePixels[index].PackedValue = unchecked((uint)source[index]);
+        sourceTexture.CopyFrom(sourcePixels);
+
+        var parameters = CreateParameters(seed: 3);
+        Assert.True(pipeline.Simulate(sourceTexture, width, height, 0, 0, width, height, in parameters));
+        Assert.False(pipeline.Simulate(sourceTexture, width, height, 0, 0, width, height, in parameters));
+
+        var growthChanged = parameters with { Growth = 0.5f };
+        Assert.False(pipeline.Simulate(sourceTexture, width, height, 0, 0, width, height, in growthChanged));
+
+        var seedChanged = parameters with { Seed = 4 };
+        Assert.True(pipeline.Simulate(sourceTexture, width, height, 0, 0, width, height, in seedChanged));
+
+        var movedSource = CreateSquareSource(width, height, 32, 32, 32, 32);
+        for (var index = 0; index < movedSource.Length; index++)
+            sourcePixels[index].PackedValue = unchecked((uint)movedSource[index]);
+        sourceTexture.CopyFrom(sourcePixels);
+        Assert.True(pipeline.Simulate(sourceTexture, width, height, 0, 0, width, height, in seedChanged));
+    }
+
+    [Fact]
     public void Direct2DInteropProducesLightningFromOpaqueCore()
     {
         using var devices = new GraphicsDevices();
