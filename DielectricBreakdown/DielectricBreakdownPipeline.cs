@@ -24,7 +24,6 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     private int _gridHeight;
     private ReadWriteBuffer<int>? _jumpFloodA;
     private ReadWriteBuffer<int>? _jumpFloodB;
-    private int _jumpFloodCapacity;
     private ReadWriteBuffer<int>? _glowAccum;
     private ReadWriteBuffer<float>? _glowTemp;
     private ReadWriteBuffer<float>? _glowMap;
@@ -207,22 +206,20 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         context.For(glowWidth, glowHeight, new GlowBlurVerticalShader(glowTemp, glowMap, glowWidth, glowHeight, glowRadius));
         context.Barrier(glowMap);
 
-        context.For(width, height, new FillIntPlaneShader(jumpFloodA, width, height, -1));
-        context.Barrier(jumpFloodA);
         context.For(gridWidth, gridHeight, new JumpFloodSeedShader(
-            state, birth, _scratch, jumpFloodA, gridWidth, gridHeight, width, height, sentinel, cellSize, parameters.Growth));
+            state, birth, _scratch, jumpFloodA, gridWidth, gridHeight, sentinel, parameters.Growth));
         context.Barrier(jumpFloodA);
 
         var reading = jumpFloodA;
         var writing = jumpFloodB;
         var stepSize = 1;
-        var maxSide = Math.Max(width, height);
+        var maxSide = Math.Max(gridWidth, gridHeight);
         while (stepSize < maxSide)
             stepSize <<= 1;
         stepSize >>= 1;
         while (stepSize >= 1)
         {
-            context.For(width, height, new JumpFloodPassShader(reading, writing, width, height, gridWidth, stepSize, cellSize));
+            context.For(gridWidth, gridHeight, new JumpFloodPassShader(reading, writing, gridWidth, gridHeight, stepSize));
             context.Barrier(writing);
             (reading, writing) = (writing, reading);
             stepSize >>= 1;
@@ -242,7 +239,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         var settings = DielectricBreakdownSettings.GetQuality(quality);
         var (gridWidth, gridHeight, _) = DielectricBreakdownSettings.GetGridSize(width, height, settings.GridResolution);
         EnsureGrid(gridWidth, gridHeight);
-        EnsureJumpFlood(checked(width * height));
+        EnsureGlow(checked(width * height));
     }
 
     private void EnsureGrid(int gridWidth, int gridHeight)
@@ -264,21 +261,14 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _rowOffsets = _device.AllocateReadWriteBuffer<int>(gridHeight);
         _potential = _device.AllocateReadWriteBuffer<int>(gridLength);
         _intensity = _device.AllocateReadWriteBuffer<float>(gridLength);
+        _jumpFloodA = _device.AllocateReadWriteBuffer<int>(gridLength);
+        _jumpFloodB = _device.AllocateReadWriteBuffer<int>(gridLength);
         _gridWidth = gridWidth;
         _gridHeight = gridHeight;
     }
 
-    private void EnsureJumpFlood(int pixelCount)
+    private void EnsureGlow(int pixelCount)
     {
-        if (_jumpFloodCapacity < pixelCount)
-        {
-            _jumpFloodA?.Dispose();
-            _jumpFloodB?.Dispose();
-            _jumpFloodA = _device.AllocateReadWriteBuffer<int>(pixelCount);
-            _jumpFloodB = _device.AllocateReadWriteBuffer<int>(pixelCount);
-            _jumpFloodCapacity = pixelCount;
-        }
-
         var glowCapacity = (pixelCount + 15) / 16 + 64;
         if (_glowCapacity < glowCapacity)
         {
@@ -319,6 +309,8 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _rowOffsets?.Dispose();
         _potential?.Dispose();
         _intensity?.Dispose();
+        _jumpFloodA?.Dispose();
+        _jumpFloodB?.Dispose();
         _mask = null;
         _state = null;
         _birth = null;
@@ -331,6 +323,8 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         _rowOffsets = null;
         _potential = null;
         _intensity = null;
+        _jumpFloodA = null;
+        _jumpFloodB = null;
         _gridWidth = 0;
         _gridHeight = 0;
     }
@@ -338,11 +332,6 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
     public void Dispose()
     {
         DisposeGridBuffers();
-        _jumpFloodA?.Dispose();
-        _jumpFloodB?.Dispose();
-        _jumpFloodA = null;
-        _jumpFloodB = null;
-        _jumpFloodCapacity = 0;
         _glowAccum?.Dispose();
         _glowTemp?.Dispose();
         _glowMap?.Dispose();

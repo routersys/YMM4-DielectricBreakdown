@@ -694,10 +694,7 @@ internal readonly partial struct JumpFloodSeedShader(
     ReadWriteBuffer<int> jumpFlood,
     int gridWidth,
     int gridHeight,
-    int width,
-    int height,
     int sentinel,
-    float cellSize,
     float growth) : IComputeShader
 {
     private readonly ReadWriteBuffer<int> state = state;
@@ -706,10 +703,7 @@ internal readonly partial struct JumpFloodSeedShader(
     private readonly ReadWriteBuffer<int> jumpFlood = jumpFlood;
     private readonly int gridWidth = gridWidth;
     private readonly int gridHeight = gridHeight;
-    private readonly int width = width;
-    private readonly int height = height;
     private readonly int sentinel = sentinel;
-    private readonly float cellSize = cellSize;
     private readonly float growth = growth;
 
     public void Execute()
@@ -720,20 +714,11 @@ internal readonly partial struct JumpFloodSeedShader(
             return;
 
         var index = gy * gridWidth + gx;
-        if (state[index] != 1 || birth[index] < 1)
-            return;
-
         var contact = scratch[1];
         var total = contact != sentinel ? contact : scratch[4];
         var visible = growth * total;
-        if (birth[index] - 1 >= visible)
-            return;
-
-        var px = (int)((gx + 0.5f) * cellSize);
-        var py = (int)((gy + 0.5f) * cellSize);
-        if (px < 0 || px >= width || py < 0 || py >= height)
-            return;
-        jumpFlood[py * width + px] = index;
+        var seeded = state[index] == 1 && birth[index] >= 1 && birth[index] - 1 < visible;
+        jumpFlood[index] = seeded ? index : -1;
     }
 }
 
@@ -742,25 +727,21 @@ internal readonly partial struct JumpFloodSeedShader(
 internal readonly partial struct JumpFloodPassShader(
     ReadWriteBuffer<int> input,
     ReadWriteBuffer<int> output,
-    int width,
-    int height,
     int gridWidth,
-    int stepSize,
-    float cellSize) : IComputeShader
+    int gridHeight,
+    int stepSize) : IComputeShader
 {
     private readonly ReadWriteBuffer<int> input = input;
     private readonly ReadWriteBuffer<int> output = output;
-    private readonly int width = width;
-    private readonly int height = height;
     private readonly int gridWidth = gridWidth;
+    private readonly int gridHeight = gridHeight;
     private readonly int stepSize = stepSize;
-    private readonly float cellSize = cellSize;
 
     public void Execute()
     {
         var x = ThreadIds.X;
         var y = ThreadIds.Y;
-        if (x >= width || y >= height)
+        if (x >= gridWidth || y >= gridHeight)
             return;
 
         var best = -1;
@@ -771,16 +752,14 @@ internal readonly partial struct JumpFloodPassShader(
             {
                 var sx = x + dx * stepSize;
                 var sy = y + dy * stepSize;
-                if (sx < 0 || sx >= width || sy < 0 || sy >= height)
+                if (sx < 0 || sx >= gridWidth || sy < 0 || sy >= gridHeight)
                     continue;
-                var candidate = input[sy * width + sx];
+                var candidate = input[sy * gridWidth + sx];
                 if (candidate < 0)
                     continue;
-                var cx = (candidate % gridWidth + 0.5f) * cellSize;
-                var cy = (candidate / gridWidth + 0.5f) * cellSize;
-                var ddx = x + 0.5f - cx;
-                var ddy = y + 0.5f - cy;
-                var distance = ddx * ddx + ddy * ddy;
+                var ddx = x - candidate % gridWidth;
+                var ddy = y - candidate / gridWidth;
+                var distance = (float)(ddx * ddx + ddy * ddy);
                 if (distance < bestDistance)
                 {
                     bestDistance = distance;
@@ -788,7 +767,7 @@ internal readonly partial struct JumpFloodPassShader(
                 }
             }
         }
-        output[y * width + x] = best;
+        output[y * gridWidth + x] = best;
     }
 }
 
@@ -1023,7 +1002,7 @@ internal readonly partial struct RenderShader(
         if (x >= width || y >= height)
             return;
 
-        var cell = jumpFlood[y * width + x];
+        var cell = FindNearestSite(x, y);
         var bestEnergy = 0f;
         var bestCore = 0f;
         if (cell >= 0)
@@ -1070,6 +1049,36 @@ internal readonly partial struct RenderShader(
         var g = Hlsl.Lerp(colorG, 1f, whiteness) * alpha;
         var b = Hlsl.Lerp(colorB, 1f, whiteness) * alpha;
         output[ThreadIds.XY] = new Float4(r, g, b, alpha);
+    }
+
+    private int FindNearestSite(int x, int y)
+    {
+        var cellX = Hlsl.Clamp((int)(x / cellSize), 0, gridWidth - 1);
+        var cellY = Hlsl.Clamp((int)(y / cellSize), 0, gridHeight - 1);
+        var best = -1;
+        var bestDistance = 3.402823e+38f;
+        for (var dy = -1; dy <= 1; dy++)
+        {
+            for (var dx = -1; dx <= 1; dx++)
+            {
+                var nx = cellX + dx;
+                var ny = cellY + dy;
+                if (nx < 0 || nx >= gridWidth || ny < 0 || ny >= gridHeight)
+                    continue;
+                var candidate = jumpFlood[ny * gridWidth + nx];
+                if (candidate < 0)
+                    continue;
+                var ddx = x + 0.5f - (candidate % gridWidth + 0.5f) * cellSize;
+                var ddy = y + 0.5f - (candidate / gridWidth + 0.5f) * cellSize;
+                var distance = ddx * ddx + ddy * ddy;
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = candidate;
+                }
+            }
+        }
+        return best;
     }
 
     private void Accumulate(int cell, Float2 position, float visible, int contact, ref float bestEnergy, ref float bestCore)
