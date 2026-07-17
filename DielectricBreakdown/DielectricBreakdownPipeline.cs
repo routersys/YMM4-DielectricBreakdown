@@ -115,8 +115,6 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         var settings = DielectricBreakdownSettings.GetQuality(parameters.Quality);
         var gridWidth = _gridWidth;
         var gridHeight = _gridHeight;
-        var gridLength = gridWidth * gridHeight;
-        var pixelCount = width * height;
         var (_, _, cellSize) = DielectricBreakdownSettings.GetGridSize(width, height, settings.GridResolution);
         var reachCellCount = Math.Max(parameters.ReachPixels, 1f) / cellSize;
         var maxSteps = DielectricBreakdownSettings.GetStepCount(reachCellCount, settings.MaxSteps);
@@ -156,7 +154,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         var glowMap = _glowMap!;
 
         context.For(1, new InitScratchShader(_scratch, sentinel));
-        context.For(gridLength, new FillIntShader(mainFlag, gridLength, 0));
+        context.For(gridWidth, gridHeight, new FillIntPlaneShader(mainFlag, gridWidth, gridHeight, 0));
         context.For(gridWidth, gridHeight, new SilhouetteShader(source, mask, width, height, gridWidth, gridHeight, cellSize, 0.05f));
         context.Barrier(mask);
         context.Barrier(_scratch);
@@ -201,8 +199,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
             DielectricBreakdownSettings.LeaderIntensity, DielectricBreakdownSettings.SideIntensity, DielectricBreakdownSettings.SideDecayPerHop));
         context.Barrier(intensity);
 
-        var glowLength = glowWidth * glowHeight;
-        context.For(glowLength, new FillIntShader(glowAccum, glowLength, 0));
+        context.For(glowWidth, glowHeight, new FillIntPlaneShader(glowAccum, glowWidth, glowHeight, 0));
         context.Barrier(glowAccum);
         context.For(gridWidth, gridHeight, new GlowDepositShader(
             state, birth, parent, mainFlag, intensity, _scratch, glowAccum,
@@ -215,7 +212,7 @@ internal sealed class DielectricBreakdownPipeline : IDisposable
         context.For(glowWidth, glowHeight, new GlowBlurVerticalShader(glowTemp, glowMap, glowWidth, glowHeight, glowRadius));
         context.Barrier(glowMap);
 
-        context.For(pixelCount, new FillIntShader(jumpFloodA, pixelCount, -1));
+        context.For(width, height, new FillIntPlaneShader(jumpFloodA, width, height, -1));
         context.Barrier(jumpFloodA);
         context.For(gridWidth, gridHeight, new JumpFloodSeedShader(
             state, birth, _scratch, jumpFloodA, gridWidth, gridHeight, width, height, sentinel, cellSize, parameters.Growth));

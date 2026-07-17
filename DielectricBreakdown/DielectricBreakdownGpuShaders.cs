@@ -22,6 +22,29 @@ internal readonly partial struct FillIntShader(
     }
 }
 
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct FillIntPlaneShader(
+    ReadWriteBuffer<int> values,
+    int width,
+    int height,
+    int value) : IComputeShader
+{
+    private readonly ReadWriteBuffer<int> values = values;
+    private readonly int width = width;
+    private readonly int height = height;
+    private readonly int value = value;
+
+    public void Execute()
+    {
+        var x = ThreadIds.X;
+        var y = ThreadIds.Y;
+        if (x >= width || y >= height)
+            return;
+        values[y * width + x] = value;
+    }
+}
+
 [ThreadGroupSize(DefaultThreadGroupSizes.X)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct InitScratchShader(
